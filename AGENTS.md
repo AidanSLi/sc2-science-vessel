@@ -20,6 +20,20 @@
   deleted. A comment that records a measured constant, an upstream bug, or a rejected
   alternative is kept.
 
+## Linux runtime notes
+
+- **WebKitGTK's DMABUF renderer is broken on some Mesa/driver combinations.** On the
+  reference machine (KDE 6.7 Wayland, webkit2gtk 2.54.1) `npm run tauri dev` fails two
+  different ways without the flag: `Error 71 (Protocol error) dispatching to Wayland
+  display` kills the process outright, and the X11 backend instead opens a window with a
+  blank webview while logging `Failed to create GBM buffer of size 1280x820: Invalid
+  argument` on every frame. Always test with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Do not
+  chase this as an application bug — it reproduces with an unmodified Tauri scaffold.
+- **Global shortcuts are X11-only** (Tauri issue 3578). Registering on Wayland is expected
+  to fail, which is why `setup` logs the error and continues instead of returning it: an
+  error out of `setup` takes the whole app down, leaving the user no window to toggle the
+  overlay from.
+
 ## Testing
 
 - Any metric implementation lands with a fixture test against a real replay from

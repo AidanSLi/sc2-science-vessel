@@ -8,7 +8,7 @@
 	 */
 	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
-	import { pollClientApi, type LiveState } from '#lib/client-api';
+	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
 
 	let { children } = $props();
 
@@ -30,15 +30,24 @@
 		{ href: '/settings', label: 'Settings' }
 	];
 
-	/** A dot colour and label for the client-API state. */
+	/**
+	 * A dot colour and label for the client-API state.
+	 *
+	 * Outside the desktop shell the warning colour is wrong: a browser cannot read loopback,
+	 * so `unavailable` there is a limitation of the host rather than a problem the user can
+	 * fix, and it is deliberately not dressed up as a fault.
+	 */
 	const indicator = $derived.by(() => {
+		const inBrowser = !isTauri();
 		switch (live.status) {
 			case 'live':
 				return { colour: 'bg-ahead', text: 'Game running' };
 			case 'replay':
 				return { colour: 'bg-race-protoss', text: 'Replay open' };
 			case 'unavailable':
-				return { colour: 'bg-neutral', text: 'Game not detected' };
+				return inBrowser
+					? { colour: 'bg-surface-700', text: 'Desktop app only' }
+					: { colour: 'bg-behind', text: 'Game not detected' };
 			case 'error':
 				return { colour: 'bg-behind', text: 'Client API error' };
 			default:

@@ -18,9 +18,42 @@ the real desktop session on this machine, and it is explicit about which claims 
 
 ## Status
 
-Founding stage. No application code yet — the assessment, the ADRs, and the project
-conventions are written; the first milestone is the Phase 0 de-risk experiment described
-in `docs/assessment.md` §5.2 (confirm the SC2 Client API clock on `localhost:6119`).
+Skeleton. The assessment, ADRs, and conventions are written, and the app runs end to end:
+SvelteKit 3 + Tailwind 4 in a Tauri 2 shell, with the always-on-top click-through overlay
+window and its global-shortcut toggle. Nothing reads a replay yet — the next milestone is
+the Python sidecar (Phase 1).
+
+The SC2 Client API clock on `localhost:6119`, which the overlay's timer depends on, is
+still **UNVERIFIED against a running game**; only one replay exists on the reference
+machine and StarCraft II is not installed there.
+
+## Running it
+
+Prerequisites: Node 22+, Rust 1.77+ with the Tauri 2 system dependencies (on Arch:
+`webkit2gtk-4.1`, `gtk3`), and — for Python work — `uv`.
+
+```sh
+npm install
+npm run check      # svelte-check, zero warnings is the bar
+npm run build      # static SPA into build/
+npm run tauri dev  # the desktop app
+```
+
+### Linux desktop notes
+
+The WebKitGTK DMABUF renderer is broken against some Mesa/driver combinations. Both
+failure modes were seen on the reference machine (a KDE 6.7 Wayland session, Mesa 25.x):
+a hard `Error 71 (Protocol error) dispatching to Wayland display`, and a window that opens
+with a blank webview and `Failed to create GBM buffer of size 1280x820: Invalid argument`
+repeated on stderr. Either way the app looks dead and nothing is logged that points at the
+cause:
+
+```sh
+WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri dev
+```
+
+This does not affect the overlay window's behaviour. The global shortcut is X11-only
+(Tauri issue 3578); on Wayland the overlay is opened from the Builds page.
 
 ## Layout
 
@@ -28,4 +61,6 @@ in `docs/assessment.md` §5.2 (confirm the SC2 Client API clock on `localhost:61
 docs/assessment.md   feasibility study — read this first
 docs/adr/            architecture decision records
 AGENTS.md            conventions for agents working in this repo
+src/                 SvelteKit frontend (routes/(app) is the main window, routes/overlay the overlay)
+src-tauri/           Rust shell: windows, the global shortcut, sidecar lifecycle
 ```

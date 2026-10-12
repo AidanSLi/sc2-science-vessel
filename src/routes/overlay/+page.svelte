@@ -37,16 +37,34 @@
 	let manualClock = $state(0);
 	let usingManual = $state(false);
 
+	/**
+	 * Picks the clock source from the latest poll.
+	 *
+	 * The game's clock always wins when it is readable, and the manual clock takes over
+	 * whenever it is not — before the game has started, after it exits, or in a browser tab.
+	 * Manual mode is entered automatically rather than only on the first keypress, because
+	 * an overlay that shows a frozen `0:00` and no affordance looks broken, while one that
+	 * shows "press space" is self-explanatory.
+	 *
+	 * @param state The freshly polled client state.
+	 */
+	function applyLiveState(state: LiveState) {
+		live = state;
+		if (state.status === 'live' || state.status === 'replay') {
+			usingManual = false;
+		} else if (state.status === 'unavailable' || state.status === 'error') {
+			usingManual = true;
+		}
+	}
+
 	/** Poll the client every second. Locally bound so it can be cleared on destroy. */
 	const timer = setInterval(async () => {
-		live = await pollClientApi();
-		// The client answered: its clock is authoritative, so leave manual mode.
-		if (live.status === 'live' || live.status === 'replay') usingManual = false;
+		applyLiveState(await pollClientApi());
 	}, 1000);
 
 	// Poll once immediately so the first second is not spent showing "connecting".
 	void (async () => {
-		live = await pollClientApi();
+		applyLiveState(await pollClientApi());
 	})();
 
 	/** The clock the guide counts against: the game's own, or the manual fallback. */
