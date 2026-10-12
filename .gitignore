@@ -1,0 +1,34 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# node / frontend
+node_modules/
+dist/
+build/
+.svelte-kit/
+*.tsbuildinfo
+
+# rust / tauri
+src-tauri/target/
+target/
+
+# local data and secrets — replays and parsed caches are large and user-specific
+data/
+*.db
+*.sqlite
+*.sqlite3
+.replays/
+.env
+.env.*
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+*.swp
