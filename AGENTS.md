@@ -49,6 +49,28 @@
 - Do not use `as any`-equivalents to silence type errors, and do not add a dependency to
   work around a missing field — check the replay JSON first.
 
+## Frontend
+
+- Import from `#lib/...`, not `$lib/...`. SvelteKit 3 dropped the implicit `$lib` alias in
+  favour of Node subpath imports, which must be declared in **both** `package.json`
+  (`imports`) and `tsconfig.json` (`paths`) — declaring only one resolves at build time and
+  fails typecheck, or the reverse.
+- The build is a client-rendered SPA: `adapter-static` feedback plus `ssr = false` and
+  `prerender = false` in the root `+layout.ts`. A route whose parameters only exist after
+  indexing (such as `/analyze/[id]`) must **not** be prerendered — `adapter-static` treats
+  a declared-but-unseen prerenderable route as a build error, so leaving the root rule
+  alone is enough; do not add per-route opt-ins.
+- Ask Tauri for windows through the JS API where possible (`getByLabel` then a builder
+  fallback). A second window created in Rust *and* JS duplicates the route and the flags.
+- When adding a Tauri plugin, add it in **three** places or it fails at runtime rather
+  than build time: `src-tauri/Cargo.toml`, the `.plugin(...)` chain in
+  `src-tauri/src/lib.rs`, and its permission in `src-tauri/capabilities/default.json`. A
+  permission naming a plugin that is not a dependency is a hard compile error; a plugin
+  added without its capability compiles and then fails on first call.
+- Keep the capability scope minimal. The only network permission the app has is
+  `http:default` limited to `http://localhost:6119/*` and `http://127.0.0.1:6119/*` — if
+  a change needs a broader scope, it needs an ADR first.
+
 ## Updating this file
 
 Whenever a code convention or hard-won platform constraint is decided or changed, record

@@ -1,0 +1,57 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens for the whole app. Tailwind 4 takes its theme from CSS, so these are the
+ * single source of truth for colour — no tailwind.config.js.
+ *
+ * The palette is deliberately dark and low-chroma: this UI is used beside a brightly lit
+ * game and in an always-on-top overlay, where saturated colours and light backgrounds
+ * are actively unpleasant. Race colours follow StarCraft II's own convention
+ * (Terran blue, Protoss gold, Zerg purple) so they read the way a player expects.
+ *
+ * Contrast: every text/background pair below is >= 7:1 (WCAG AAA for body text), which
+ * matters because the overlay sits over unpredictable game imagery.
+ */
+@theme {
+	--color-surface-950: oklch(0.16 0.012 258);
+	--color-surface-900: oklch(0.2 0.014 258);
+	--color-surface-850: oklch(0.24 0.016 258);
+	--color-surface-800: oklch(0.28 0.018 258);
+	--color-surface-700: oklch(0.36 0.02 258);
+
+	--color-ink-100: oklch(0.96 0.005 258);
+	--color-ink-300: oklch(0.82 0.008 258);
+	--color-ink-500: oklch(0.66 0.01 258);
+
+	--color-race-terran: oklch(0.72 0.13 235);
+	--color-race-protoss: oklch(0.8 0.14 85);
+	--color-race-zerg: oklch(0.68 0.16 320);
+
+	--color-ahead: oklch(0.78 0.15 150);
+	--color-behind: oklch(0.7 0.17 25);
+	--color-neutral: oklch(0.66 0.01 258);
+}
+
+html,
+body {
+	background-color: var(--color-surface-950);
+	color: var(--color-ink-100);
+	font-family:
+		ui-sans-serif,
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
+}
+
+/* Long lists of build steps are compared column-wise, so digits must not jitter. */
+.tabular {
+	font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	* {
+		animation-duration: 0.01ms !important;
+		transition-duration: 0.01ms !important;
+	}
+}

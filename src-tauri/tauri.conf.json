@@ -1,0 +1,44 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"productName": "sc2-science-vessel",
+	"version": "0.0.0",
+	"identifier": "dev.aidansli.sc2-science-vessel",
+	"build": {
+		"beforeDevCommand": "npm run dev",
+		"devUrl": "http://localhost:1420",
+		"beforeBuildCommand": "npm run build",
+		"frontendDist": "../build"
+	},
+	"app": {
+		"windows": [
+			{
+				"label": "main",
+				"title": "sc2-science-vessel",
+				"width": 1280,
+				"height": 820,
+				"minWidth": 900,
+				"minHeight": 600,
+				"resizable": true,
+				"center": true,
+				"decorations": true,
+				"theme": "Dark"
+			}
+		],
+		"security": {
+			"csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+		}
+	},
+	"bundle": {
+		"active": true,
+		"targets": ["deb", "rpm", "appimage"],
+		"icon": [
+			"icons/32x32.png",
+			"icons/128x128.png",
+			"icons/128x128@2x.png",
+			"icons/icon.png"
+		],
+		"category": "Game",
+		"shortDescription": "Offline SC2 replay analysis and build-order coach",
+		"longDescription": "Analyse StarCraft II replays locally — worker, economy, production and battle metrics — and follow a preset build order on the in-game clock inside a game overlay. Requires no account and no network."
+	}
+}
