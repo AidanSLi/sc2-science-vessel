@@ -32,3 +32,5 @@ data/
 .idea/
 .DS_Store
 *.swp
+*.SC2Replay
+!tests/fixtures/replays/README.md
