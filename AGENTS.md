@@ -68,6 +68,11 @@
 - **Filter cosmetic noise from `UpgradeCompleteEvent`** (`Spray*`, `Reward*`, `Dance*`),
   and neutral/map spawns from `UnitBornEvent` (`MineralField*`, `VespeneGeyser`,
   `InvisibleTargetDummy`, `XelNagaTower`). Both pollute counts badly.
+- **`replay.gamemetadata.json` is a member inside the MPQ archive, not a file beside the
+  replay.** (MMR, `Duration`, map, per-player results live there.) Read it through the
+  archive; `Path(...).with_suffix(".SC2Replay.gamemetadata.json")` silently finds nothing.
+  Also: one replay in the library carries `MMR: -36400` (an arcade map), so validate before
+  using — and note `Duration` is **real-time** seconds, not the in-game clock.
 - **Never read the game process's memory and never write to the game.** The only
   sanctioned live input is the SC2 Client API on `localhost:6119`. This keeps the app on
   the benign side of Blizzard's discretionary EULA clause.

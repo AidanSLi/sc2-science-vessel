@@ -89,15 +89,19 @@ This single event type carries most of the feature list:
    Per-second unit positions are **not** in the replay at all — the game is a
    deterministic state machine, and only deltas are stored. Any "unit positions over
    time" chart requires you to re-simulate.
-2. **MMR is in the file.** `replay.gamemetadata.json` carries `MMR` per player **but
-   only for ranked games**: 236 of 722 replays have it (397 MMR values, 9 to 4,871).
-   That is still enough for offline progression/opponent tracking, and it is a free
-   cross-check against any upload-based service.
-3. **`Duration` in `gamemetadata.json` is already real-time seconds at Faster speed** —
-   measured on all 722 replays: 531 exact 1.40× the parsed game time, 95 at 1.41×,
-   tails out at 16×, plus 5 games at 2.0× and one at 3.0× (paused/custom). So
-   **real wall-clock seconds = game seconds × 1.4**, and Liquipedia's table confirms
-   Faster = speed factor 1.4 / "42.86 real-time seconds per normal minute".
+2. **MMR is in the file.** `replay.gamemetadata.json` is a member *inside* the
+   `.SC2Replay` MPQ archive (not a sidecar file next to it), and it carries `MMR` per
+   player **but only for ranked games**: 236 of 722 replays have it (397 MMR values,
+   9 to 4,871). That is still enough for offline progression/opponent tracking, and it is
+   a free cross-check against any upload-based service.
+   One value is garbage — `-36400` in `Winter Madness LE (3).SC2Replay`, an arcade map —
+   so treat a nonsensical MMR as "no MMR" rather than plotting it.
+3. **`Duration` in `gamemetadata.json` is real-time seconds, not in-game seconds** —
+   measured on all 722 replays: 641 of 722 match `frames / 16` to within 1%, and
+   `Duration / in-game clock` is exactly 1.40× on 531, 1.41× on 95, 1.42× on 21. Do not
+   compare it against the in-game clock. So **real wall-clock seconds = game seconds ×
+   1.4**, and Liquipedia's table confirms Faster = speed factor 1.4 / "42.86 real-time
+   seconds per normal minute".
 
    *Correction to earlier thinking in this session:* an observed ~6× ratio in one AI
    game was an artifact of that game's pacing, not a property of Faster. The 1.4 factor
