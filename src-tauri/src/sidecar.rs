@@ -89,21 +89,29 @@ fn locate_sidecar(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
 		tried.push(candidate.display().to_string());
 	}
 
+	// The Python fallback walks **upward** from the current directory rather than looking only
+	// in it, because `tauri dev` runs the app with `src-tauri` as its working directory, so a
+	// single-level check never finds the repo root. Both `.venv` and `sidecar/` must be present
+	// before the interpreter is trusted: that combination is what distinguishes this project's
+	// virtualenv from an unrelated `.venv` further up the tree, whose Python would not have
+	// `sc2reader` installed and would fail with an import error instead of a clear message.
 	if let Ok(cwd) = std::env::current_dir() {
-		let venv = cwd.join(".venv/bin/python");
-		let package = cwd.join("sidecar");
-		if venv.is_file() && package.is_dir() {
-			return Ok((
-				venv,
-				vec![
-					"-m".to_string(),
-					"sc2sv.cli".to_string(),
-					"--package-root".to_string(),
-					package.display().to_string(),
-				],
-			));
+		for ancestor in cwd.ancestors().take(4) {
+			let venv = ancestor.join(".venv/bin/python");
+			let package = ancestor.join("sidecar");
+			if venv.is_file() && package.join("sc2sv/cli.py").is_file() {
+				return Ok((
+					venv,
+					vec![
+						"-m".to_string(),
+						"sc2sv.cli".to_string(),
+						"--package-root".to_string(),
+						package.display().to_string(),
+					],
+				));
+			}
 		}
-		tried.push(venv.display().to_string());
+		tried.push(format!("{}/.venv/bin/python (searched upward)", cwd.display()));
 	}
 
 	Err(format!(

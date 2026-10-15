@@ -1,11 +1,11 @@
 //! User settings, persisted next to the app's other data.
 //!
-//! Deliberately a small JSON file rather than a config crate: there is exactly one
-//! user-changeable setting so far (the overlay toggle key), and a JSON blob that fails to
-//! parse falls back to defaults instead of refusing to start. The file is written on change,
-//! not on exit, so a crash mid-game cannot lose a setting the player just changed.
+//! Deliberately a small JSON file rather than a config crate: the settings are two short
+//! values, and a JSON blob that fails to parse falls back to defaults instead of refusing to
+//! start. The file is written on change, not on exit, so a crash mid-game cannot lose a
+//! setting the player just changed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -48,6 +48,13 @@ pub struct Settings {
 	/// `Shift`, `Super`/`Cmd` modifiers and a trailing key.
 	#[serde(default = "default_overlay_shortcut")]
 	pub overlay_shortcut: String,
+	/// Directories the app scans for `.SC2Replay` files, in the order the user added them.
+	///
+	/// Empty means "not configured yet", which the matches page turns into a first-run
+	/// prompt rather than an error; `suggest_replay_roots` exists to make that prompt
+	/// answerable in one click on a fresh install.
+	#[serde(default)]
+	pub replay_roots: Vec<String>,
 }
 
 /// Returns the default accelerator as an owned string, for serde's `default` attribute.
@@ -59,6 +66,7 @@ impl Default for Settings {
 	fn default() -> Self {
 		Self {
 			overlay_shortcut: default_overlay_shortcut(),
+			replay_roots: Vec::new(),
 		}
 	}
 }
@@ -108,6 +116,124 @@ impl Settings {
 		let text = serde_json::to_string_pretty(self)
 			.map_err(|err| format!("settings could not be serialised: {err}"))?;
 		std::fs::write(&path, text).map_err(|err| format!("{}: {err}", path.display()))
+	}
+}
+
+/// Lists directories that look like StarCraft II replay folders on this machine.
+///
+/// Why this exists: a replay library is somewhere non-obvious — the game writes into the
+/// user's Documents folder, and on Linux that folder is inside a Wine prefix whose layout
+/// depends on the launcher (`Faugus`, `Lutris`, plain `~/.wine`, Bottles). Asking the user to
+/// find and paste that path before the app can do anything is a poor first run, so the app
+/// checks the layouts it knows about and offers whatever it finds.
+///
+/// Every candidate must be an existing directory to be returned, so an empty result is a
+/// normal answer (the game may not be installed) rather than a failure. Results are deduped
+/// because a prefix can be reachable by more than one route.
+///
+/// @returns Existing candidate directories, sorted for a stable order.
+pub fn suggest_replay_roots() -> Vec<String> {
+	let mut found: Vec<String> = Vec::new();
+	let home = match std::env::var_os("HOME") {
+		Some(home) => PathBuf::from(home),
+		None => return found,
+	};
+
+	// Native installs first: on Windows and macOS the game writes straight into Documents.
+	for native in [
+		home.join("Documents/StarCraft II/Accounts"),
+		home.join("Documents/StarCraft II"),
+	] {
+		collect_account_replays(&native, &mut found);
+	}
+
+	// Then the Wine prefixes, in the order of how likely they are to be where a Linux player
+	// actually installed the game. Only the prefix marker directory is probed, so no prefix
+	// that is not present costs more than one failed `read_dir`.
+	for prefix in [
+		home.join("Faugus"),
+		home.join("Games"),
+		home.join(".local/share/bottles/bottles"),
+		home.join(".wine"),
+		home.join(".local/share/lutris"),
+	] {
+		collect_prefix_replays(&prefix, &mut found);
+	}
+
+	found.sort();
+	found.dedup();
+	found
+}
+
+/// Walks one Wine prefix for replay folders.
+///
+/// Windows paths live under `drive_c/users/<user>/`, so the user name is not known in
+/// advance and has to be enumerated. Bottles nests a second level of prefix directories, so
+/// that case is handled by trying the directory itself and then one level down.
+///
+/// @param prefix The prefix root, which may or may not exist.
+/// @param found Accumulator for existing replay directories.
+fn collect_prefix_replays(prefix: &Path, found: &mut Vec<String>) {
+	// A Bottles prefix is `<bottles>/<BottleName>/drive_c`, and a plain Wine prefix is
+	// `<prefix>/drive_c`; trying both costs one failed lookup each.
+	let mut drive_candidates = vec![prefix.join("drive_c")];
+	if let Ok(entries) = std::fs::read_dir(prefix) {
+		for entry in entries.flatten() {
+			drive_candidates.push(entry.path().join("drive_c"));
+		}
+	}
+
+	for drive_c in drive_candidates {
+		let users = drive_c.join("users");
+		let Ok(entries) = std::fs::read_dir(&users) else {
+			continue;
+		};
+		for entry in entries.flatten() {
+			let documents = entry.path().join("Documents/StarCraft II");
+			collect_account_replays(&documents, found);
+		}
+	}
+}
+
+/// Finds the `Replays` directories inside a StarCraft II `Accounts` folder.
+///
+/// The game's own documents folder is `<documents>/Accounts/<account id>/<profile id>/Replays`,
+/// but some layouts drop a level, so both shapes are probed. Returning a `Replays` directory
+/// rather than the `Accounts` root matters: pointing the scanner at a folder with no replays
+/// in it produces an empty library and no explanation, while this returns nothing at all.
+///
+/// @param documents The StarCraft II documents folder, or its `Accounts` subfolder.
+/// @param found Accumulator for existing replay directories.
+fn collect_account_replays(documents: &Path, found: &mut Vec<String>) {
+	// `documents` may already be the `Accounts` directory or its parent; probe both spellings
+	// of the child so a caller does not have to know which it passed.
+	for accounts in [documents.to_path_buf(), documents.join("Accounts")] {
+		let Ok(entries) = std::fs::read_dir(&accounts) else {
+			continue;
+		};
+		for entry in entries.flatten() {
+			let account = entry.path();
+			let Ok(profiles) = std::fs::read_dir(&account) else {
+				// Some layouts put `Replays` directly under the account.
+				push_if_dir(account.join("Replays/Multiplayer"), found);
+				push_if_dir(account.join("Replays"), found);
+				continue;
+			};
+			for profile in profiles.flatten() {
+				push_if_dir(profile.path().join("Replays/Multiplayer"), found);
+				push_if_dir(profile.path().join("Replays"), found);
+			}
+		}
+	}
+}
+
+/// Pushes a path onto `found` when it is a directory.
+///
+/// @param path The candidate.
+/// @param found Accumulator for existing directories.
+fn push_if_dir(path: PathBuf, found: &mut Vec<String>) {
+	if path.is_dir() {
+		found.push(path.display().to_string());
 	}
 }
 

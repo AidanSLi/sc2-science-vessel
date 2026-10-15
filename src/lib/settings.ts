@@ -13,10 +13,15 @@ import { isTauri } from './client-api';
 export interface AppSettings {
 	/** The overlay toggle accelerator that is *actually registered*, e.g. `Ctrl+Alt+O`. */
 	overlayShortcut: string;
+	/** Directories scanned for `.SC2Replay` files, in the order the user added them. */
+	replayRoots: string[];
 }
 
 /** The accelerator used when nothing has been chosen, matching the Rust default. */
 export const DEFAULT_OVERLAY_SHORTCUT = 'Ctrl+Alt+O';
+
+/** The settings used when the shell is unavailable, matching the Rust defaults. */
+const FALLBACK_SETTINGS: AppSettings = { overlayShortcut: DEFAULT_OVERLAY_SHORTCUT, replayRoots: [] };
 
 /** Outcome of a rebind attempt, so the UI can distinguish success from substitution. */
 export interface RebindResult {
@@ -32,13 +37,52 @@ export interface RebindResult {
  * @returns The settings, or the defaults when running outside Tauri.
  */
 export async function loadSettings(): Promise<AppSettings> {
-	if (!isTauri()) return { overlayShortcut: DEFAULT_OVERLAY_SHORTCUT };
+	if (!isTauri()) return { ...FALLBACK_SETTINGS };
 	try {
 		const { invoke } = await import('@tauri-apps/api/core');
-		return await invoke<AppSettings>('get_settings');
+		const settings = await invoke<Partial<AppSettings>>('get_settings');
+		// A settings file written by an older build has no `replayRoots`, and a payload with a
+		// missing array would make every caller guard against `undefined`. Filling it in here
+		// keeps the type honest.
+		return {
+			overlayShortcut: settings.overlayShortcut ?? DEFAULT_OVERLAY_SHORTCUT,
+			replayRoots: settings.replayRoots ?? []
+		};
 	} catch {
-		return { overlayShortcut: DEFAULT_OVERLAY_SHORTCUT };
+		return { ...FALLBACK_SETTINGS };
 	}
+}
+
+/**
+ * Lists directories that look like replay libraries on this machine.
+ *
+ * @returns Candidate paths, or an empty list outside the desktop shell or on failure. An
+ *     empty list is a normal answer — the game may simply not be installed — so it is not
+ *     reported as an error.
+ */
+export async function suggestReplayRoots(): Promise<string[]> {
+	if (!isTauri()) return [];
+	try {
+		const { invoke } = await import('@tauri-apps/api/core');
+		return await invoke<string[]>('suggest_replay_roots');
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Replaces the configured replay folders.
+ *
+ * @param roots The complete list of directories.
+ * @returns The stored list, which is the shell's normalised version of the request.
+ * @throws When the shell is unavailable or refused to write, with its explanation.
+ */
+export async function saveReplayRoots(roots: string[]): Promise<string[]> {
+	if (!isTauri()) {
+		throw new Error('The desktop app is needed to read replay folders from disk.');
+	}
+	const { invoke } = await import('@tauri-apps/api/core');
+	return await invoke<string[]>('set_replay_roots', { roots });
 }
 
 /**

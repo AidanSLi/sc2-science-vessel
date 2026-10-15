@@ -20,7 +20,7 @@ import collections
 import pytest
 import sc2reader
 
-from sc2sv import metrics
+from sc2sv import cache, metrics
 from sc2sv.identity import PlayerDirectory
 from sc2sv.replay import load_header
 
@@ -376,9 +376,181 @@ def test_town_hall_positions_are_found_for_the_race_that_has_them(loaded_replay,
 		assert len(entries) == len(set(entries)), f"duplicate town halls recorded for pid {pid}"
 
 
+def test_ability_names_survive_a_smart_cast():
+	"""An inject cast by right-clicking must still be recognised as an inject.
+
+	This is a regression test for a bug that produced a *plausible* wrong number rather than an
+	error: `ability_casts` read `event.ability.name`, but sc2reader resolves a smart cast to
+	`RightClick`. On a real replay 198 of 237 injects were recorded as `RightClick` and only 39
+	were found, so 84% of injects were invisible and the reported downtime was understated — the
+	player looked better than they were.
+
+	The events here are stubs, not a replay: the point is the name resolution, and a fixture
+	replay cannot be guaranteed to contain a smart-cast inject.
+	"""
+
+	class _Ability:
+		def __init__(self, name):
+			self.name = name
+
+	class _SmartCast:
+		"""What sc2reader hands back for a right-click: the command hides the ability."""
+
+		ability = _Ability("RightClick")
+		ability_name = "SpawnLarva"
+		second = 120.0
+
+	class _Resolved:
+		"""A build whose events carry no `ability_name`; the resolved name is all there is."""
+
+		ability = _Ability("CalldownMULE")
+		second = 300.0
+
+	class _Replay:
+		game_events = [_SmartCast(), _Resolved()]
+
+	class _Directory:
+		"""Ownership is irrelevant here; the name resolution is what is under test."""
+
+		@staticmethod
+		def owner_of(event):
+			return None
+
+	casts = metrics.ability_casts(_Replay(), _Directory())
+	kinds = [cast["kind"] for cast in casts]
+	assert kinds == ["inject", "mule"], f"smart cast or fallback name was missed: {kinds}"
+	# The stub carries no `location`, so a cast with no position must not invent one.
+	assert all(cast["x"] is None and cast["y"] is None for cast in casts)
+
+
+def test_ability_name_prefers_the_command_over_the_resolved_ability():
+	"""`ability_name` wins, because `ability.name` is the smart-cast resolution."""
+
+	class _Ability:
+		name = "RightClick"
+
+	class _Event:
+		ability = _Ability()
+		ability_name = "SpawnLarva"
+
+	assert metrics._ability_name_of(_Event()) == "SpawnLarva"
+
+	class _NoDirect:
+		ability = _Ability()
+
+	# Falling back matters for a build that does not write `ability_name` at all: dropping the
+	# event would report a player who injects constantly as never injecting.
+	assert metrics._ability_name_of(_NoDirect()) == "RightClick"
+
+	class _NoAbility:
+		"""An event with neither field: a `SelectionEvent` or a `CameraEvent`."""
+
+	assert metrics._ability_name_of(_NoAbility()) is None
+
+
+def test_energy_timeline_measures_each_base_separately():
+	"""Two bases injected 5 s apart are normal play, not impossible play at one base.
+
+	Pooling casts from a mirror matchup into one timeline is the second energy bug: a ZvZ has
+	two Zergs injecting at their own hatcheries, and blending them made the per-base gaps
+	meaningless and the downtime a mixture of two players' macro. Because attribution is by
+	position, the same casts measured against one base or two must give different answers.
+	"""
+	bases = [(30.0, 30.0), (90.0, 90.0)]
+	casts = [
+		{"second": 100.0, "kind": "inject", "playerPid": 1, "x": 30.0, "y": 30.0},
+		{"second": 105.0, "kind": "inject", "playerPid": 2, "x": 90.0, "y": 90.0},
+		{"second": 200.0, "kind": "inject", "playerPid": 1, "x": 30.0, "y": 30.0},
+		{"second": 205.0, "kind": "inject", "playerPid": 2, "x": 90.0, "y": 90.0},
+	]
+
+	per_base = metrics.energy_timeline(casts, bases, "inject", metrics.INJECT_IDEAL_SECONDS)
+	assert per_base["bases"] == 2
+	# Two casts per base, 100 s apart, on a 31.7 s cycle: 68.3 s idle at each.
+	assert len(per_base["gaps"]) == 2
+	assert all(gap["idleSeconds"] == pytest.approx(68.3, abs=0.1) for gap in per_base["gaps"])
+
+	# Measured against only the first base, the second base's casts are mis-attributed to it and
+	# the 5 s spacing is below the ideal cycle, so those gaps are skipped rather than clamped.
+	one_base = metrics.energy_timeline(casts, bases[:1], "inject", metrics.INJECT_IDEAL_SECONDS)
+	assert one_base["bases"] == 1
+	assert one_base["missedSeconds"] < per_base["missedSeconds"]
+
+
+def test_energy_timeline_does_not_invent_downtime():
+	"""A single cast, and no casts at all, must report no downtime rather than full uptime loss."""
+	assert metrics.energy_timeline([], [], "inject", metrics.INJECT_IDEAL_SECONDS)["missedSeconds"] == 0
+	one = metrics.energy_timeline(
+		[{"second": 100.0, "kind": "inject", "playerPid": 1, "x": 0.0, "y": 0.0}],
+		[(0.0, 0.0)],
+		"inject",
+		metrics.INJECT_IDEAL_SECONDS,
+	)
+	assert one["gaps"] == []
+	assert one["missedSeconds"] == 0
+
+
 def test_town_hall_positions_are_deduplicated(loaded_replay, directory):
 	"""A hatchery reported by both birth and init must be recorded once."""
 	positions = metrics.town_hall_positions(loaded_replay, directory)
 	for pid, entries in positions.items():
 		assert entries == sorted(entries), f"positions for pid {pid} are not sorted"
 		assert len(entries) == len(set(entries)), f"duplicates for pid {pid}: {entries}"
+
+
+def test_composition_excludes_structures_and_workers(loaded_replay, directory):
+	"""A composition summary must contain fighting units, not the economy that produced them.
+
+	The first version of this returned `Probe 99, Pylon 19` next to `Zealot 114` for a replay, which
+	is not a composition. Workers are excluded on their own `isWorker` flag rather than by name,
+	because `Larva` and `MULE` are the cases a name list gets wrong.
+	"""
+	births = metrics.build_order_from_events(loaded_replay, directory)
+	composition = metrics.army_composition(births)
+	structure_names = {step["name"] for steps in births.values() for step in steps if step["isStructure"]}
+	worker_names = {step["name"] for steps in births.values() for step in steps if step["isWorker"]}
+	for pid, counts in composition.items():
+		if not counts:
+			continue
+		overlap = structure_names & set(counts) | worker_names & set(counts)
+		assert not overlap, f"pid {pid} composition contains non-army units: {sorted(overlap)}"
+
+
+def test_is_army_unit_excludes_the_awkward_cases():
+	"""`Larva` is not a worker, and a `MULE` is a worker that mines. Both must be excluded."""
+	assert metrics.is_army_unit({"name": "Zealot", "isWorker": False, "isStructure": False}) is True
+	assert metrics.is_army_unit({"name": "Drone", "isWorker": True, "isStructure": False}) is False
+	assert metrics.is_army_unit({"name": "Pylon", "isWorker": False, "isStructure": True}) is False
+	# A MULE has no unit table entry to flag it, so the name fallback has to catch it.
+	assert metrics.is_army_unit({"name": "MULE", "isWorker": False, "isStructure": False}) is False
+
+
+def test_cache_key_changes_when_the_analyser_revision_changes(tmp_path, monkeypatch):
+	"""A metric fix must invalidate cached payloads.
+
+	The cache key was originally the replay path plus its size and mtime, which made every metric
+	bug permanent: a replay analysed once kept serving the numbers the old code produced, and the
+	app showed them with no way to tell them from a fresh result. `CACHE_REVISION` is the fix, and
+	this is the test that notices if it is dropped again.
+	"""
+	replay = tmp_path / "sample.SC2Replay"
+	replay.write_bytes(b"not really a replay, but the key only stats it")
+	monkeypatch.setenv(cache.CACHE_DIR_ENV, str(tmp_path / "cache"))
+
+	key = cache.cache_key(replay)
+	monkeypatch.setattr(cache, "CACHE_REVISION", cache.CACHE_REVISION + 1)
+	assert cache.cache_key(replay) != key, "the analyser revision is not part of the cache key"
+
+def test_cache_stores_and_reloads_a_payload(tmp_path, monkeypatch):
+	"""A stored payload comes back, and a replay whose mtime changed is a miss."""
+	replay = tmp_path / "sample.SC2Replay"
+	replay.write_bytes(b"b" * 32)
+	monkeypatch.setenv(cache.CACHE_DIR_ENV, str(tmp_path / "cache"))
+
+	assert cache.load(replay) is None
+	cache.store(replay, {"map": "Acropolis LE", "players": []})
+	assert cache.load(replay) == {"map": "Acropolis LE", "players": []}
+
+	# A different file at the same path must not hit the old entry.
+	replay.write_bytes(b"c" * 64)
+	assert cache.load(replay) is None

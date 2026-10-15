@@ -1,4 +1,4 @@
-import type { BuildOrder, BuildStep, Matchup } from './types';
+import type { BuildMatchup, BuildOrder, BuildStep } from './types';
 
 /**
  * Where a build order has got to, given a game clock reading. Pure and total, so the
@@ -65,8 +65,8 @@ export function advance(
  */
 export function indexByMatchup(
 	builds: readonly BuildOrder[]
-): Partial<Record<Matchup, BuildOrder[]>> {
-	const out: Partial<Record<Matchup, BuildOrder[]>> = {};
+): Partial<Record<BuildMatchup, BuildOrder[]>> {
+	const out: Partial<Record<BuildMatchup, BuildOrder[]>> = {};
 	for (const build of builds) {
 		(out[build.matchup] ??= []).push(build);
 	}

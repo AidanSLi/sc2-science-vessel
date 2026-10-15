@@ -18,7 +18,7 @@ import sys
 import time
 from typing import Any
 
-from . import builds
+from . import builds, cache
 from .analyze import analyse_replay
 from .replay import load_header
 
@@ -92,7 +92,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 		return 1
 	started = time.monotonic()
 	try:
-		payload = analyse_replay(path)
+		payload = analyse_replay(path, use_cache=not args.no_cache)
 	except ValueError as error:
 		print(str(error), file=sys.stderr)
 		return 1
@@ -168,6 +168,22 @@ def cmd_build_order(args: argparse.Namespace) -> int:
 	return 0
 
 
+def cmd_cache(args: argparse.Namespace) -> int:
+	"""Prints the cache directory, or empties it.
+
+	Args:
+	    args: Parsed arguments carrying `action`.
+
+	Returns:
+	    A process exit code.
+	"""
+	if args.action == "path":
+		print(cache.cache_dir())
+		return 0
+	print(f"removed {cache.clear()} cached analyses", file=sys.stderr)
+	return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
 	"""Builds the argument parser for the `sc2sv` command.
 
@@ -192,8 +208,19 @@ def build_parser() -> argparse.ArgumentParser:
 	# two output formats. Here JSON is already the default, so the flag is a no-op that exists
 	# so a caller can pass it uniformly rather than special-casing one subcommand.
 	analyze.add_argument("--json", action="store_true", help="print the payload as JSON (the default)")
+	analyze.add_argument(
+		"--no-cache",
+		action="store_true",
+		help="recompute instead of reading the on-disk cache; use while debugging a metric",
+	)
 	analyze.add_argument("--summary", action="store_true", help="print a human summary to stderr instead of JSON")
 	analyze.set_defaults(func=cmd_analyze)
+
+	# `cache` is maintenance rather than a feature: the cache is invisible when it works, so the
+	# only time a person reaches for this is when a number looks stale or the disk is filling up.
+	cache_parser = subparsers.add_parser("cache", help="show or empty the on-disk analysis cache")
+	cache_parser.add_argument("action", choices=("path", "clear"))
+	cache_parser.set_defaults(func=cmd_cache)
 
 	order = subparsers.add_parser("build-order", help="print spawningtool's build order for one replay")
 	order.add_argument("replay")

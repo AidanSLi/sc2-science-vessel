@@ -12,6 +12,8 @@ field does.
 
 from __future__ import annotations
 
+import pytest
+
 from sc2sv.analyze import analyse_replay
 
 from .conftest import find_replay
@@ -59,8 +61,13 @@ DEATH_KEYS = {"second", "unit", "x", "y", "ownerPid", "ownerRace", "isWorker"}
 
 # The energy payload is a per-kind summary, not a cast list. An earlier version of
 # `analysis.ts` declared a `casts` array that the sidecar never sent; this set is what caught it.
-ENERGY_KEYS = {"kind", "idealSeconds", "bases", "seconds", "gaps", "missedSeconds"}
+ENERGY_KEYS = {"kind", "idealSeconds", "bases", "seconds", "gaps", "missedSeconds", "perPlayer"}
 GAP_KEYS = {"base", "from", "to", "idleSeconds"}
+
+# `perPlayer` is what keeps a mirror matchup honest: with two Zergs injecting at their own
+# hatcheries, one blended `missedSeconds` cannot say whose macro was idle. Measured on a real 1v1
+# ZvZ, per-player attribution gives 2578.7 s where pooling the casts and bases gave 2116.5 s.
+ENERGY_PLAYER_KEYS = {"pid", "bases", "missedSeconds"}
 
 # A tracked step is used for `tech`, `expansions`, `resourceStructures` and `firstStructures` —
 # four lists of one record shape.
@@ -125,6 +132,40 @@ def test_energy_timelines_match_the_frontend_type():
 			assert set(gap) == GAP_KEYS, f"{kind} gap shape drifted: {sorted(gap)}"
 		for second in timeline["seconds"]:
 			assert isinstance(second, (int, float)), f"{kind}: non-numeric cast time {second!r}"
+		# Every player of the kind's race gets an entry, and their downtime sums to the total —
+		# the property that makes the per-player breakdown trustworthy rather than decorative.
+		per_player = timeline["perPlayer"]
+		assert isinstance(per_player, list), f"{kind}: perPlayer is {type(per_player).__name__}"
+		for entry in per_player:
+			assert set(entry) == ENERGY_PLAYER_KEYS, f"{kind}: {sorted(entry)}"
+		if per_player:
+			total = sum(entry["missedSeconds"] for entry in per_player)
+			assert total == pytest.approx(timeline["missedSeconds"]), (
+				f"{kind}: per-player {total} disagrees with the total {timeline['missedSeconds']}"
+			)
+			assert timeline["bases"] == sum(entry["bases"] for entry in per_player), (
+				f"{kind}: base count does not match the per-player breakdown"
+			)
+			pids = [entry["pid"] for entry in per_player]
+			assert pids == sorted(pids), f"{kind}: perPlayer order is unstable: {pids}"
+
+
+def test_energy_per_player_attribution_names_every_player_of_the_race():
+	"""A mirror matchup must report each player separately, not one blended figure.
+
+	This is the regression test for the bug that motivated `perPlayer`: an earlier version pooled
+	both players' casts against the union of their town halls. On this ZvZ that credited casts to
+	the wrong player's hatchery and under-reported downtime by 18%. Asserting the pids is what
+	catches a return to a single blended number, which would still look plausible.
+	"""
+	payload = _payload()
+	inject = payload["energy"]["inject"]
+	zerg_pids = sorted(player["pid"] for player in payload["players"] if player["race"] == "Zerg")
+	assert zerg_pids, "fixture replay has no Zerg; the inject timeline is untested"
+	assert [entry["pid"] for entry in inject["perPlayer"]] == zerg_pids
+	# Each Zerg's bases are counted separately, so the total is the sum over players. Reading a
+	# single player's list here would report fewer bases than town halls that exist.
+	assert inject["bases"] == sum(entry["bases"] for entry in inject["perPlayer"])
 
 
 def test_tracked_step_lists_share_one_record_shape():

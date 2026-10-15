@@ -17,6 +17,7 @@
 //!   WebView trick.
 
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use std::path::Path;
 
 mod settings;
 mod sidecar;
@@ -145,6 +146,56 @@ fn set_overlay_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<Strin
 	Ok(registered)
 }
 
+/// Returns directories that look like replay libraries, so the first run can be one click.
+///
+/// @returns Existing candidate paths, possibly empty.
+#[tauri::command]
+fn suggest_replay_roots() -> Vec<String> {
+	settings::suggest_replay_roots()
+}
+
+/// Replaces the configured replay roots.
+///
+/// Takes the whole list rather than adding or removing one entry at a time. The list is small
+/// and the user edits it as a set, so a whole-list write cannot produce a half-applied state
+/// if the app dies mid-edit, and it keeps the persisted order the same as the order shown.
+///
+/// Paths are stored as absolute paths where they resolve, because a relative path in the
+/// settings file would mean something different depending on how the app was launched.
+/// Non-existent paths are still stored: a user may register a network or removable drive that
+/// is not mounted right now, and silently dropping it would lose their configuration.
+///
+/// @param app The running app handle.
+/// @param roots The complete list of directories.
+/// @returns The stored list.
+#[tauri::command]
+fn set_replay_roots(app: tauri::AppHandle, roots: Vec<String>) -> Result<Vec<String>, String> {
+	let normalised: Vec<String> = roots
+		.into_iter()
+		.map(|root| root.trim().to_string())
+		.filter(|root| !root.is_empty())
+		.map(|root| {
+			// `canonicalize` also resolves symlinks, which would rewrite a user's carefully
+			// chosen path into something they did not type, so only a relative path is made
+			// absolute. `std::path::absolute` would do this in one call but it needs Rust 1.79
+			// and this crate's MSRV is 1.77.2, so the join is spelled out.
+			let path = Path::new(&root);
+			if path.is_absolute() {
+				root
+			} else {
+				std::env::current_dir()
+					.map(|cwd| cwd.join(path).display().to_string())
+					.unwrap_or(root)
+			}
+		})
+		.collect();
+
+	let mut current = Settings::load(&app);
+	current.replay_roots = normalised.clone();
+	current.save(&app)?;
+	Ok(normalised)
+}
+
 /// Builds and runs the application.
 ///
 /// Registers the plugins the shell needs and wires the global shortcut that toggles the
@@ -162,6 +213,8 @@ pub fn run() {
 			toggle_overlay,
 			get_settings,
 			set_overlay_shortcut,
+			suggest_replay_roots,
+			set_replay_roots,
 			// The Python analysis sidecar (ADR 0001). These are the only commands that can be
 			// slow, and the only ones that read a file the app did not write itself.
 			sidecar::list_replays,

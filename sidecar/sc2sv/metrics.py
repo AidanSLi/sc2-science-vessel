@@ -59,6 +59,12 @@ MULE_COST = 50.0
 CHRONO_COST = 50.0
 INJECT_IDEAL_SECONDS = INJECT_COST / ENERGY_PER_SECOND
 MULE_IDEAL_SECONDS = MULE_COST / ENERGY_PER_SECOND
+
+# Unit names that count as workers, for the cases where the game data does not flag one. A
+# `UnitBornEvent` step carries `isWorker` from the parsed unit, and `is_army_unit` prefers that;
+# this set is the fallback for a step shape that lost the flag, so a composition summary cannot
+# silently fill up with Probes.
+WORKER_UNIT_NAMES = frozenset({"scv", "drone", "probe", "mule"})
 CHRONO_IDEAL_SECONDS = CHRONO_COST / ENERGY_PER_SECOND
 
 # Marker names for neutral map objects, kept as a second line of defence behind the unit's own
@@ -481,19 +487,48 @@ def death_locations(replay: Any, directory: PlayerDirectory) -> list[dict[str, A
 	return deaths
 
 
+def _ability_name_of(event: Any) -> str | None:
+	"""Reads the ability name from an event, preferring the command's own name.
+
+	`event.ability_name` is the action the player actually issued; `event.ability.name` is how
+	sc2reader resolved the command, and for a *smart cast* it resolves to `RightClick` instead.
+	Measured on a real ZvZ: of 237 `SpawnLarva` injects, only 39 had `ability.name ==
+	'SpawnLarva'` while all 237 had `ability_name == 'SpawnLarva'`; the other 198 read
+	`RightClick`, because a queen right-clicking a hatchery is how inject is normally cast.
+
+	Reading `ability.name` alone therefore found 16% of the injects and reported the other 84%
+	as idle time — a wrong answer in the direction that matters, since the feature exists to
+	measure missed injects. The fallback is kept so a build whose events lack `ability_name`
+	still contributes what sc2reader could resolve.
+
+	Args:
+	    event: A game event.
+
+	Returns:
+	    The ability's name, or None when the event is not an ability command.
+	"""
+	direct = getattr(event, "ability_name", None)
+	if direct:
+		return str(direct)
+	ability = getattr(event, "ability", None)
+	name = getattr(ability, "name", None) if ability is not None else None
+	return str(name) if name else None
+
+
 def ability_casts(replay: Any, directory: PlayerDirectory) -> list[dict[str, Any]]:
 	"""Collects the inject, MULE and chrono casts that the energy features measure.
 
 	These come from `game_events`, not tracker events, and they are only present at
 	`load_level=4`. The ability names are not what one would guess: a Zerg inject is recorded
-	as `SpawnLarva` and a Terran MULE as `CalldownMULE`.
+	as `SpawnLarva` and a Terran MULE as `CalldownMULE`. Read them through `_ability_name_of`,
+	which handles the smart-cast case that hides the name behind `RightClick`.
 
 	Args:
 	    replay: A loaded sc2reader replay (`load_level=4`).
 	    directory: The replay's player directory.
 
 	Returns:
-	    One entry per cast, with `second`, `kind`, `playerPid` and `position`.
+	    One entry per cast, with `second`, `kind`, `playerPid` and position.
 	"""
 	wanted = {
 		INJECT_ABILITY: "inject",
@@ -502,8 +537,7 @@ def ability_casts(replay: Any, directory: PlayerDirectory) -> list[dict[str, Any
 	}
 	casts: list[dict[str, Any]] = []
 	for event in replay.game_events:
-		ability = getattr(event, "ability", None)
-		name = getattr(ability, "name", None) if ability is not None else None
+		name = _ability_name_of(event)
 		kind = wanted.get(name) if name else None
 		if kind is None:
 			continue
@@ -633,8 +667,66 @@ def energy_timeline(
 	}
 
 
+def merge_energy_timelines(
+	timelines: list[dict[str, Any]], kind: str, ideal_seconds: float
+) -> dict[str, Any]:
+	"""Combines several players' energy timelines into one per-race timeline.
+
+	Each player's casts must be attributed against *their own* town halls. That cannot be done by
+	concatenating the casts and the bases into one list and letting nearest-base sort it out,
+	which is what the app did first: on a real 1v1 ZvZ (`White Rabbit LE (24)`, 99 injects for
+	pid 1 and 63 for pid 2) the pooled version reported **2116.5 s** of idle time where the
+	per-player sum is **1516.9 + 1061.8 = 2578.7 s** — an 18% under-report, because a cast
+	sitting between two players' bases could be credited to the wrong player's hatchery. It also
+	reported `bases: 8`, conflating two players' town halls into one count.
+
+	Gaps are merged and re-sorted by time. They are never summed into a single number per second:
+	two players injecting at the same moment is two bases' worth of macro, so the per-base gap
+	counts are the honest unit and the total is a sum over bases, not over the game clock.
+
+	Args:
+	    timelines: One player's `energy_timeline` result per pid.
+	    kind: The kind being merged, used to label the result.
+	    ideal_seconds: The energy-limited interval, carried through unchanged.
+
+	Returns:
+	    A timeline with every player's gaps, the summed `missedSeconds`, the summed per-player
+	    base count, and a `perPlayer` breakdown so the UI can attribute downtime to a player.
+	"""
+	gaps: list[dict[str, Any]] = []
+	seconds: list[float] = []
+	per_player: list[dict[str, Any]] = []
+	for timeline in timelines:
+		gaps.extend(timeline["gaps"])
+		seconds.extend(timeline["seconds"])
+		per_player.append(
+			{
+				"pid": timeline.get("pid"),
+				"bases": timeline["bases"],
+				"missedSeconds": timeline["missedSeconds"],
+			}
+		)
+	return {
+		"kind": kind,
+		"idealSeconds": round(ideal_seconds, 1),
+		"bases": sum(timeline["bases"] for timeline in timelines),
+		"seconds": sorted(seconds),
+		"gaps": sorted(gaps, key=lambda gap: gap["from"]),
+		"missedSeconds": round(sum(timeline["missedSeconds"] for timeline in timelines), 1),
+		# Kept per player so a mirror matchup can say *whose* macro was idle instead of showing
+		# one blended figure for two players. Sorted by pid so the order is stable.
+		"perPlayer": sorted(per_player, key=lambda entry: (entry["pid"] is None, entry["pid"])),
+	}
+
+
 def army_composition(births: dict[int, list[dict]]) -> dict[int, dict[str, int]]:
 	"""Counts what each player built, as a composition summary.
+
+	Structures and workers are excluded. A "unit composition" that reads `Pylon 19, Probe 99,
+	Zealot 114` is not a composition: the buildings are already shown on the tech and expansion
+	timelines, and worker count is on its own graph, so including them here only buries the army.
+	Both are recognised structurally — `isStructure` comes from the unit's own building flag and
+	`isWorker` from its worker flag — with a name fallback for the rare step that lost one.
 
 	Args:
 	    births: Per-pid unit steps, as from `build_order_from_events`.
@@ -644,6 +736,22 @@ def army_composition(births: dict[int, list[dict]]) -> dict[int, dict[str, int]]
 	"""
 	composition: dict[int, dict[str, int]] = {}
 	for pid, steps in births.items():
-		counts = collections.Counter(step["name"] for step in steps)
+		counts = collections.Counter(step["name"] for step in steps if is_army_unit(step))
 		composition[pid] = dict(counts.most_common())
 	return composition
+
+
+def is_army_unit(step: dict[str, Any]) -> bool:
+	"""Reports whether a birth is a fighting unit rather than a worker or a building.
+
+	Args:
+	    step: One step from `build_order_from_events`.
+
+	Returns:
+	    True when the unit belongs in a composition summary.
+	"""
+	if step.get("isStructure"):
+		return False
+	if step.get("isWorker"):
+		return False
+	return step["name"].lower() not in WORKER_UNIT_NAMES

@@ -8,7 +8,10 @@
  */
 
 export * from './analysis';
+export * from './analysis-view';
+export * from './build-library';
 export * from './builds';
+export * from './charts';
 export * from './clock';
 export * from './client-api';
 export * from './sample-build';

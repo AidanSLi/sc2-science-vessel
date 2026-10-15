@@ -25,6 +25,7 @@ from refresh_build_snapshot import (  # noqa: E402
 	ScrapeError,
 	clean_text,
 	parse_build_table,
+	parse_matchup_from_title,
 	parse_search_page,
 	parse_time,
 )
@@ -120,22 +121,78 @@ def test_build_table_rejects_a_row_of_the_wrong_shape():
 		parse_build_table(broken)
 
 
-def test_search_page_reads_ids_and_detects_more_pages():
-	"""Discovery reads `/build/<id>/` links, and pagination is driven by the next-page link."""
+def test_search_page_reads_ids_names_and_matchups():
+	"""Discovery reads `/build/<id>/` links, and the matchup comes from the same result row.
+
+	The row is the only place SpawningTool labels a build with its matchup for reading; the detail
+	page's `<h1>` is the replay's title, so a build fetched straight from search would otherwise
+	be stored with no matchup and drop out of every per-matchup comparison.
+	"""
 	page = (
 		'<table class="table">'
-		'<tr><td><b><a href="/build/203087/">2gate</a></b></td><td>PvZ</td></tr>'
+		'<tr><td><img alt="Protoss"/></td>'
+		'<td><b><a href="/build/203087/">2gate</a></b></td>'
+		"<td>PvZ</td><td>Economic<br/>Easy</td></tr>"
+		'<tr><td><img alt="Zerg"/></td>'
+		'<td><b><a href="/build/130000/">Ling Bane All-In</a></b></td>'
+		"<td>ZvT</td><td>All-In<br/>Hard</td></tr>"
 		"</table>"
 		'<p>Page 1 of 21</p><a class="pull-right" href="?&p=2">Next</a>'
 	)
 	summaries, has_more = parse_search_page(page)
-	assert [summary["id"] for summary in summaries] == [203087]
+	assert [summary["id"] for summary in summaries] == [203087, 130000]
 	assert summaries[0]["name"] == "2gate"
+	assert summaries[0]["matchup"] == "PvZ"
+	assert summaries[1]["matchup"] == "ZvT"
 	assert has_more is True
 
 	last_page = '<a href="/build/1/">Last</a><p>Page 21 of 21</p>'
 	summaries, has_more = parse_search_page(last_page)
 	assert has_more is False
+
+
+def test_search_page_reads_a_lowercase_matchup_token():
+	"""The site renders matchups inconsistently; the token must survive either case.
+
+	`str.capitalize()` would spell this `Zvz`, which compares unequal to the sidecar's own `ZvZ`
+	and would silently drop the build out of a per-matchup filter.
+	"""
+	page = '<tr><td><a href="/build/5/">Pool first</a></td><td>zvz</td></tr>'
+	summaries, _ = parse_search_page(page)
+	assert summaries[0]["matchup"] == "ZvZ"
+
+
+def test_search_page_skips_the_thumbnail_link_in_each_row():
+	"""A result row links its build twice: a race thumbnail with no text, then the title.
+
+	Reading only the first link skipped every row in the real page, so a working search looked
+	identical to an empty one. The markup below is the shape taken from
+	`https://lotv.spawningtool.com/build/?matchup=ZvT` (2026-10).
+	"""
+	page = (
+		"<tr><td><a href=\"/build/203208/\"><img src=\"/static/core/images/zerg.png\" alt=\"Zerg\"/></a></td>"
+		"<td><b><a href=\"/build/203208/\">3 Roach Opener - 8 Worker Eco - ZvT</a></b>"
+		"&nbsp;&nbsp;<br /><small>Created by <a href=\"?contributor=3922&sort_by=r\">railgan</a></small></td>"
+		"<td>ZvT</td><td>Economic<br />Easy</td></tr>"
+	)
+	summaries, _ = parse_search_page(page)
+	assert len(summaries) == 1
+	assert summaries[0]["id"] == 203208
+	assert summaries[0]["name"] == "3 Roach Opener - 8 Worker Eco - ZvT"
+	assert summaries[0]["matchup"] == "ZvT"
+
+
+def test_matchup_token_is_not_taken_from_a_longer_word():
+	"""A word that merely contains `ZvT` must not be read as a matchup."""
+	page = '<tr><td><a href="/build/6/">Avzta build</a></td><td>Zerg</td></tr>'
+	summaries, _ = parse_search_page(page)
+	assert summaries[0]["matchup"] is None
+
+
+def test_matchup_falls_back_to_the_page_title_for_a_direct_id_fetch():
+	"""A build fetched by id was never on a search page, so its title is the only label."""
+	assert parse_matchup_from_title("MrFercho v ThikiPizza v tigro (PvZ None)") == "PvZ"
+	assert parse_matchup_from_title("A game with no token") is None
 
 
 def test_robots_rules_match_wildcards_anywhere_in_the_path():

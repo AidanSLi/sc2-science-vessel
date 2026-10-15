@@ -59,6 +59,13 @@ _TABLE = re.compile(
 _STEP_NAME = re.compile(r"<span[^>]*class=\"([^\"]*)\"[^>]*>(.*?)</span>", re.DOTALL | re.IGNORECASE)
 _NEXT_PAGE = re.compile(r"<a[^>]*class=\"pull-right\"[^>]*href=\"\?([^\"]*)\"", re.IGNORECASE)
 _RESULT_LINK = re.compile(r"<a[^>]*href=\"/build/(\d+)/\"[^>]*>(.*?)</a>", re.DOTALL | re.IGNORECASE)
+# Search results are one `<tr>` per build. Rows are split so the matchup token can be read from
+# the row holding a result link rather than from anywhere on the page.
+_RESULT_ROW = re.compile(r"<tr.*?</tr>", re.DOTALL | re.IGNORECASE)
+# `ZvT`, `PvP`, and the `X` variants the site also lists. Normalised to capitalisation on capture.
+_MATCHUP = re.compile(r"(?<![A-Za-z])[TPZX]v[TPZX](?![A-Za-z])", re.IGNORECASE)
+# The one `<h1>` on a build page, used only as a matchup fallback for builds fetched by id.
+_TITLE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.DOTALL | re.IGNORECASE)
 
 _TAG = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\s+")
@@ -162,28 +169,81 @@ def parse_build_table(page: str) -> list[dict]:
 	return steps
 
 
+def normalise_matchup(token: str) -> str:
+	"""Normalises a matchup token to the site's `RacevRace` spelling.
+
+	`str.capitalize()` is wrong here because the site spells matchups `PvZ` with a lowercase `v`
+	and `.capitalize()` would lowercase it into `Pvz`, which would then compare unequal to the
+	sidecar's own matchup strings (`ReplayHeader.matchup` builds `PvZ` the same way) and silently
+	break every per-matchup filter.
+
+	Args:
+	    token: A token such as `zvz`, `PvZ` or `TVT`.
+
+	Returns:
+	    The canonical spelling, e.g. `ZvZ`.
+	"""
+	first, _, second = token.partition("v")
+	return f"{first.upper()}v{second.upper()}"
+
+
 def parse_search_page(page: str) -> tuple[list[dict], bool]:
 	"""Extracts the build summaries from a search-results page.
 
-	Reads ids from the `/build/<id>/` links rather than the table layout, so the surrounding
-	presentation can change without breaking discovery.
+	Reads ids and names from the `/build/<id>/` links rather than from the table layout, so the
+	surrounding presentation can change without breaking discovery. The matchup is read from the
+	same result row: the detail page's `<h1>` is the *replay's* title, so the matchup token in it
+	describes the game the build was used in rather than the build. The search row is the only place
+	the site labels a build with its matchup in a field meant for reading.
 
 	Args:
 	    page: The raw HTML of a search page.
 
 	Returns:
-	    `(summaries, has_more)` where each summary is `{id, name}` and `has_more` reports whether
-	    the page offered a next-page link.
+	    `(summaries, has_more)` where each summary is `{id, name, matchup}` and `has_more` reports
+	    whether the page offered a next-page link.
 	"""
 	seen: dict[int, dict] = {}
-	for id_text, name_fragment in _RESULT_LINK.findall(page):
-		build_id = int(id_text)
+	for row in _RESULT_ROW.findall(page):
+		# A result row contains two links to the same build: the race/unit thumbnail, whose text
+		# is empty, and the title in `<b>`. Taking the first link naively therefore skipped every
+		# single row, and the search looked like it had found nothing rather than being broken.
+		# The first link that has readable text is the title.
+		chosen: tuple[int, str] | None = None
+		for id_text, name_fragment in _RESULT_LINK.findall(row):
+			name = clean_text(name_fragment)
+			if name:
+				chosen = (int(id_text), name)
+				break
+		if chosen is None:
+			continue
+		build_id, name = chosen
 		if build_id in seen:
 			continue
-		name = clean_text(name_fragment)
-		if name:
-			seen[build_id] = {"id": build_id, "name": name}
+		matchup = _MATCHUP.search(row)
+		seen[build_id] = {
+			"id": build_id,
+			"name": name,
+			"matchup": normalise_matchup(matchup.group(0)) if matchup else None,
+		}
 	return list(seen.values()), bool(_NEXT_PAGE.search(page))
+
+
+def parse_matchup_from_title(title: str) -> str | None:
+	"""Reads the matchup token out of a build or replay title.
+
+	A label of last resort: the search page's matchup column is authoritative, but a build fetched
+	directly by id has never been seen on a search page and would otherwise be stored with no
+	matchup — which silently removes it from every per-matchup comparison.
+
+	Args:
+	    title: Text such as `MrFercho v ThikiPizza (PvZ None)`.
+
+	Returns:
+	    A normalised matchup such as `PvZ`, or None when the title names none.
+	"""
+	match = _MATCHUP.search(title)
+	return normalise_matchup(match.group(0)) if match else None
 
 
 @dataclasses.dataclass
@@ -301,7 +361,7 @@ def discover(fetcher: Fetcher, pages: int, matchup: str | None) -> list[dict]:
 	return list(found.values())
 
 
-def fetch_builds(fetcher: Fetcher, build_ids: list[int]) -> list[dict]:
+def fetch_builds(fetcher: Fetcher, targets: list[dict]) -> list[dict]:
 	"""Fetches and parses each build page.
 
 	A build that fails is reported and skipped rather than aborting the run: one redesigned page
@@ -309,22 +369,33 @@ def fetch_builds(fetcher: Fetcher, build_ids: list[int]) -> list[dict]:
 
 	Args:
 	    fetcher: A configured fetcher.
-	    build_ids: The ids to fetch.
+	    targets: Summary records of `{id, name, matchup?}` from `discover`, or bare ids promoted
+	        by `main` when the user named them explicitly.
 
 	Returns:
-	    Build records of `{id, name, steps}`.
+	    Build records of `{id, name, matchup, steps}`.
 	"""
 	builds: list[dict] = []
-	for index, build_id in enumerate(build_ids, start=1):
+	for index, target in enumerate(targets, start=1):
+		build_id = int(target["id"])
 		try:
 			page = fetcher.get(f"/build/{build_id}/")
 			steps = parse_build_table(page)
 		except ScrapeError as error:
 			print(f"warning: build {build_id} failed: {error}", file=sys.stderr)
 			continue
-		builds.append({"id": build_id, "name": f"Build {build_id}", "steps": steps})
+		title = _TITLE.search(page)
+		matchup = target.get("matchup") or parse_matchup_from_title(clean_text(title.group(1)) if title else "")
+		builds.append(
+			{
+				"id": build_id,
+				"name": target.get("name") or f"Build {build_id}",
+				"matchup": matchup,
+				"steps": steps,
+			}
+		)
 		if index % 25 == 0:
-			print(f"  {index}/{len(build_ids)} builds fetched", file=sys.stderr)
+			print(f"  {index}/{len(targets)} builds fetched", file=sys.stderr)
 	return builds
 
 
@@ -346,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
 	fetcher = Fetcher(interval=args.interval, robots=load_robots())
 
 	if args.ids:
-		targets = [{"id": build_id, "name": f"Build {build_id}"} for build_id in args.ids]
+		targets = [{"id": build_id, "name": f"Build {build_id}", "matchup": None} for build_id in args.ids]
 	else:
 		targets = discover(fetcher, args.pages, args.matchup)
 
@@ -360,16 +431,10 @@ def main(argv: list[str] | None = None) -> int:
 			print(f"  {target['id']}  {target['name']}")
 		return 0
 
-	builds = fetch_builds(fetcher, [target["id"] for target in targets])
+	builds = fetch_builds(fetcher, targets)
 	if not builds:
 		print("nothing fetched; keeping the existing snapshot", file=sys.stderr)
 		return 1
-
-	# Names come from the search page, which is where the human-readable title lives; the detail
-	# page's `<h1>` is the replay's title instead, so it is not used.
-	names = {target["id"]: target["name"] for target in targets}
-	for build in builds:
-		build["name"] = names.get(build["id"], build["name"])
 
 	snapshot = {
 		"source": BASE_URL,

@@ -24,6 +24,17 @@ export type Race = 'Terran' | 'Protoss' | 'Zerg';
  */
 export type Matchup = `${'T' | 'P' | 'Z'}v${'T' | 'P' | 'Z'}`;
 
+/**
+ * A matchup a *build order* is written for, which may be the `X` wildcard.
+ *
+ * Distinct from `Matchup` on purpose. A game always has two known races, so `Matchup` is exact;
+ * a build order may be written against "any opponent" (`ZvX`), which is a real SpawningTool
+ * category and the common case for a build whose opener is race-agnostic. Widening `Matchup`
+ * itself would have made every consumer of a game's matchup handle a wildcard that a game can
+ * never produce.
+ */
+export type BuildMatchup = `${'T' | 'P' | 'Z'}v${'T' | 'P' | 'Z' | 'X'}`;
+
 export type GameResult = 'Win' | 'Loss' | 'Undecided';
 
 /**
@@ -44,6 +55,16 @@ export interface BuildStep {
 	isWorker: boolean;
 	/** Whether the step is chronoboosted, for Protoss builds. */
 	isChronoboosted: boolean;
+	/**
+	 * The build author's own note for this step, or null.
+	 *
+	 * Load-bearing for 180 of the 2569 steps in the bundled snapshot, and *only* for the 19 steps
+	 * named `Action`. Those rows carry no unit name at all — the instruction is entirely in the
+	 * note (`Hallucinate Phoenix, send to Terran main`, `scout`, `WIN`) — so dropping notes would
+	 * render them as a bare, meaningless `Action`. For other steps a note is a qualifier
+	 * (`Extractor Trick`, `Proxy Pylon`, `Rally to natural`) and is shown as secondary text.
+	 */
+	note: string | null;
 }
 
 /** A named build order that can be selected and followed. */
@@ -52,7 +73,7 @@ export interface BuildOrder {
 	/** Human title, e.g. `22 Drone Ling Bane`. */
 	title: string;
 	/** Matchup this build is intended for; used to auto-select on game start. */
-	matchup: Matchup;
+	matchup: BuildMatchup;
 	/** Where the build came from, so the UI can be honest about provenance. */
 	source: 'user' | 'imported' | 'bundled';
 	/** Upstream attribution when `source` is `imported` or `bundled`. */

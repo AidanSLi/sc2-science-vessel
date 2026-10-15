@@ -16,7 +16,7 @@ import collections
 import pathlib
 from typing import Any
 
-from . import builds, metrics
+from . import builds, cache, metrics
 from .identity import PlayerDirectory
 from .replay import load_events, load_header
 
@@ -66,24 +66,70 @@ EXPANSION_STRUCTURES = frozenset({"Hatchery", "Lair", "Hive", "CommandCenter", "
 RESOURCE_STRUCTURES = frozenset({"Refinery", "Extractor", "Assimilator"})
 
 
-def _pid_of_race(players: list[Any], race: str) -> int:
-	"""Finds the player id of the player fielding a given race, or 0 when absent.
+def _players_of_race(players: list[Any], race: str) -> list[Any]:
+	"""Finds every player fielding a given race, in payload order.
 
-	Energy casts belong to a race rather than to a slot: only a Zerg has injects, only a Terran
-	has MULEs, only a Protoss has chrono. Returning 0 for "no such player" is safe because the
-	lookup that consumes it finds nothing and reports zero casts rather than the wrong player's.
+	Every, not the first: a mirror matchup has two. `_pid_of_race` returned only one and was the
+	root of a bug — a ZvZ's second Zerg's injects were filtered out entirely, which reports a
+	player who injects constantly as never injecting.
 
 	Args:
 	    players: The replay's players.
 	    race: The race to find.
 
 	Returns:
-	    The matching player's pid, or 0.
+	    The matching players, possibly empty.
 	"""
-	for player in players:
-		if str(getattr(player, "race", "")).lower() == race.lower():
-			return int(getattr(player, "pid", 0) or 0)
-	return 0
+	return [p for p in players if str(getattr(p, "race", "")).lower() == race.lower()]
+
+
+def _energy_for_race(
+	casts: list[dict[str, Any]],
+	players: list[Any],
+	race: str,
+	town_halls: dict[int, list[tuple[float, float]]],
+	kind: str,
+	ideal_seconds: float,
+) -> dict[str, Any]:
+	"""Builds one race's energy timeline, measured separately per player.
+
+	Each player's casts are attributed against that player's own town halls and only then merged.
+	Pooling the casts and the bases into one list instead — which the app did first — let a cast
+	sitting between two players' bases be credited to the wrong player's hatchery: on a real 1v1
+	ZvZ that under-reported downtime by 18% and conflated two players' town halls into one base
+	count. See `metrics.merge_energy_timelines`.
+
+	An ability no player of the race cast returns the empty timeline shape rather than None, so
+	the payload's contract does not change with the matchup; `missedSeconds` of 0 then means "this
+	race was not in the game", which is the honest reading.
+
+	Args:
+	    casts: Every cast of this kind, from `metrics.ability_casts`.
+	    players: The replay's players.
+	    race: The race that fields the ability.
+	    town_halls: Every player's town-hall positions.
+	    kind: The kind being measured.
+	    ideal_seconds: The energy-limited interval.
+
+	Returns:
+	    A merged per-race timeline.
+	"""
+	timelines: list[dict[str, Any]] = []
+	for player in _players_of_race(players, race):
+		pid = int(getattr(player, "pid", 0) or 0)
+		timeline = metrics.energy_timeline(
+			[cast for cast in casts if cast.get("playerPid") == pid],
+			town_halls.get(pid, []),
+			kind,
+			ideal_seconds,
+		)
+		timeline["pid"] = pid
+		timelines.append(timeline)
+	if not timelines:
+		# Still merged rather than returned bare: the payload's shape must not depend on which
+		# races were in the game, or the UI's `energy.mule.perPlayer` throws for a PvZ.
+		return metrics.merge_energy_timelines([], kind, ideal_seconds)
+	return metrics.merge_energy_timelines(timelines, kind, ideal_seconds)
 
 
 def _structure_timeline(
@@ -223,17 +269,25 @@ def closest_build(
 	return best
 
 
-def analyse_replay(path: str | pathlib.Path) -> dict[str, Any]:
+def analyse_replay(path: str | pathlib.Path, use_cache: bool = True) -> dict[str, Any]:
 	"""Produces the complete prepared analysis payload for one replay.
 
 	Args:
 	    path: Path to the `.SC2Replay` file.
+	    use_cache: Whether to read and write the on-disk cache. The CLI passes `--no-cache`
+	        through here so a developer debugging a metric can always see freshly computed
+	        numbers rather than a payload cached before their edit.
 
 	Returns:
 	    The payload: header facts, per-player series, and the shared timelines. Raises if the
 	    replay cannot be parsed at all, because a caller asking for one replay's analysis needs
 	    to hear about failure rather than receive an empty payload.
 	"""
+	if use_cache:
+		cached = cache.load(path)
+		if cached is not None:
+			return cached
+
 	header = load_header(path)
 	if header.error is not None:
 		raise ValueError(f"cannot parse replay {path}: {header.error}")
@@ -251,6 +305,7 @@ def analyse_replay(path: str | pathlib.Path) -> dict[str, Any]:
 	casts_by_kind: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
 	for cast in casts:
 		casts_by_kind[cast["kind"]].append(cast)
+
 	town_halls = metrics.town_hall_positions(replay, directory)
 
 	# `spawningtool` supplies the guide-shaped build order — the list a player would follow,
@@ -290,7 +345,7 @@ def analyse_replay(path: str | pathlib.Path) -> dict[str, Any]:
 	# runby view needs the opponent's worker kills, which belong to the other player's events.
 	worker_deaths = [death for death in deaths if death["isWorker"]]
 
-	return {
+	payload = {
 		"path": header.path,
 		"build": header.build,
 		"release": header.release,
@@ -306,25 +361,35 @@ def analyse_replay(path: str | pathlib.Path) -> dict[str, Any]:
 		"deaths": deaths,
 		"workerDeaths": worker_deaths,
 		"energy": {
-			# Each energy kind belongs to one race's town hall, so the bases are resolved from
-			# the race that fields it rather than assumed to be player 1 or 2.
-			"inject": metrics.energy_timeline(
+			# Each energy kind belongs to one race's town hall, and each player's casts are measured
+			# against their own bases before the players are merged. See `_energy_for_race`.
+			"inject": _energy_for_race(
 				casts_by_kind.get("inject", []),
-				town_halls.get(_pid_of_race(header.players, "Zerg"), []),
+				header.players,
+				"Zerg",
+				town_halls,
 				"inject",
 				metrics.INJECT_IDEAL_SECONDS,
 			),
-			"mule": metrics.energy_timeline(
+			"mule": _energy_for_race(
 				casts_by_kind.get("mule", []),
-				town_halls.get(_pid_of_race(header.players, "Terran"), []),
+				header.players,
+				"Terran",
+				town_halls,
 				"mule",
 				metrics.MULE_IDEAL_SECONDS,
 			),
-			"chrono": metrics.energy_timeline(
+			"chrono": _energy_for_race(
 				casts_by_kind.get("chrono", []),
-				town_halls.get(_pid_of_race(header.players, "Protoss"), []),
+				header.players,
+				"Protoss",
+				town_halls,
 				"chrono",
 				metrics.CHRONO_IDEAL_SECONDS,
 			),
 		},
 	}
+
+	if use_cache:
+		cache.store(path, payload)
+	return payload

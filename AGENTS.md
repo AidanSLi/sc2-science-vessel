@@ -105,6 +105,23 @@ and there is no extra multiplier to apply.
   Protoss chrono boost is `ChronoBoostEnergyCost`. There is no `Inject` or `MULE` ability
   name. All three carry `event.player` and a `second`, and the Zerg/Terran ones carry a
   `location`, so a hatch/CC can be identified from the cast position.
+- **Read an ability's name from `event.ability_name`, never `event.ability.name`.** A smart
+  cast (a queen right-clicking a hatchery, which is how inject is *normally* cast) resolves to
+  `ability.name == 'RightClick'` while `ability_name` keeps `SpawnLarva`. On one replay 198 of
+  237 injects read as `RightClick` and only 39 were found, so 84% of injects were invisible and
+  the reported idle time was understated — the player looked better than they were. This is the
+  dangerous kind of bug: it returns a plausible number instead of failing.
+- **Measure energy downtime per player, against that player's own town halls, and only then
+  merge.** A mirror matchup has two players fielding the same ability, and pooling both players'
+  casts against the union of their bases lets a cast between two players' hatcheries be credited
+  to the wrong one. Measured on a real 1v1 ZvZ (`White Rabbit LE (24)`): per-player attribution
+  gives 2578.7 s where pooling gave 2116.5 s, an 18% under-report, and the pooled base count
+  (8) conflated two players. The payload's `energy.<kind>.perPlayer` carries the breakdown so the
+  UI can name whose macro was idle; `merge_energy_timelines` merges without re-summing per second.
+- **`cache.CACHE_REVISION` must be bumped for any metric change.** A cache entry is keyed by
+  path, size, mtime *and* the revision, and a stale entry is indistinguishable from a fresh one:
+  a before/after comparison silently re-read the old numbers once and appeared to prove a fix had
+  not worked. When in doubt, clear `~/.cache/sc2-science-vessel/` before re-measuring.
 - **`PlayerStatsEvent` is sampled every 10 game seconds** (observed cadences `[0, 10]`,
   `[0, 5, 10]`, `[0, 3, 10]`). Never claim sub-10-second precision for a stat derived from
   it; use per-unit tracker events when you need more.

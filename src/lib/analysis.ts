@@ -152,12 +152,23 @@ export interface EnergyTimeline {
 	/** `inject`, `mule` or `chrono`. */
 	kind: string;
 	idealSeconds: number;
-	/** How many town halls casts were successfully attributed to. */
+	/** Town halls counted across every player of the race, so a mirror matchup reports both. */
 	bases: number;
 	/** Cast times, in game seconds. */
 	seconds: number[];
 	gaps: EnergyGap[];
 	missedSeconds: number;
+	/**
+	 * Per-player breakdown, present when the replay contains a player of this ability's race.
+	 *
+	 * Exists because a mirror matchup fields two players of the same race, and one blended
+	 * `missedSeconds` cannot say whose macro was idle — on a real 1v1 ZvZ, measuring each
+	 * player against their own town halls gave 2578.7 s where pooling them gave 2116.5 s.
+	 *
+	 * Sorted by pid. Empty when no player of the race was in the game, in which case
+	 * `missedSeconds` is 0 because the ability does not exist rather than because it was used.
+	 */
+	perPlayer?: { pid: number | null; bases: number; missedSeconds: number }[];
 }
 
 /** Everything the analysis view renders for one replay. */
