@@ -81,6 +81,11 @@
   player discovers mid-game. `toggle_overlay` is exposed as a Tauri command for exactly
   this reason, and it must not be `pub` (the `#[tauri::command]` macro generates a
   same-named import, and a `pub fn` collides with it: E0255).
+- **The global shortcut cannot be tested by injecting keys on this machine.** XTEST
+  synthesises keys but they do **not** reach XGrabKey grabs through Xwayland: a bare
+  `XGrabKey` + XTEST test showed the grab never firing, so a hotkey test that "did nothing"
+  proves nothing about the app. Verify the shortcut by hand, or wait for the XDG
+  GlobalShortcuts portal (ADR 0003) which is testable through D-Bus.
 - **Never read the game process's memory and never write to the game.** The only
   sanctioned live input is the SC2 Client API on `localhost:6119`. This keeps the app on
   the benign side of Blizzard's discretionary EULA clause.
