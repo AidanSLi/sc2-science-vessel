@@ -18,6 +18,7 @@ import sys
 import time
 from typing import Any
 
+from . import builds
 from .analyze import analyse_replay
 from .replay import load_header
 
@@ -134,25 +135,36 @@ def cmd_build_order(args: argparse.Namespace) -> int:
 	    args: Parsed arguments carrying `replay` and optional `pid`.
 
 	Returns:
-	    A process exit code.
+	    A process exit code: 1 when the replay cannot be read or spawningtool finds no steps.
 	"""
-	from spawningtool.parser import parse_replay
-
 	path = pathlib.Path(args.replay)
 	if not path.is_file():
 		print(f"not a file: {path}", file=sys.stderr)
 		return 1
-	result = parse_replay(str(path))
-	if not result:
+
+	# `builds.parse_build_orders` rather than spawningtool directly, because spawningtool's step
+	# `time` labels come from a pre-LotV 22.4 fps constant and are 1.4x low. See `builds.py`.
+	players = builds.parse_build_orders(path)
+	if not players:
 		print(f"spawningtool could not parse {path}", file=sys.stderr)
 		return 1
-	build = result.get("build", {})
+
 	if args.pid is not None:
-		build = {key: value for key, value in build.items() if str(key) == str(args.pid)}
+		players = {pid: player for pid, player in players.items() if pid == args.pid}
+		if not players:
+			print(f"no player with pid {args.pid} in {path.name}", file=sys.stderr)
+			return 1
+
 	if args.json:
-		_print_json({"build": build, "players": result.get("players", {})})
-	else:
-		_print_json(build)
+		_print_json(players)
+		return 0
+
+	for pid, player in players.items():
+		print(f"{player['name']} ({player['race']}), pid {pid}")
+		for step in player["steps"]:
+			minutes, seconds = divmod(int(step["second"]), 60)
+			supply = step["supply"] if step["supply"] is not None else "?"
+			print(f"  {minutes:>2}:{seconds:02d}  {supply:>3}  {step['name']}")
 	return 0
 
 
@@ -176,6 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 	analyze = subparsers.add_parser("analyze", help="print the full analysis payload for one replay")
 	analyze.add_argument("replay")
+	# `--json` is accepted for symmetry with `scan` and `build-order`, where it selects between
+	# two output formats. Here JSON is already the default, so the flag is a no-op that exists
+	# so a caller can pass it uniformly rather than special-casing one subcommand.
+	analyze.add_argument("--json", action="store_true", help="print the payload as JSON (the default)")
 	analyze.add_argument("--summary", action="store_true", help="print a human summary to stderr instead of JSON")
 	analyze.set_defaults(func=cmd_analyze)
 

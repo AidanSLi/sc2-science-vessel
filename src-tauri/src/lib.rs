@@ -19,6 +19,7 @@
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 mod settings;
+mod sidecar;
 
 pub use settings::Settings;
 
@@ -160,7 +161,13 @@ pub fn run() {
 			frontend_ready,
 			toggle_overlay,
 			get_settings,
-			set_overlay_shortcut
+			set_overlay_shortcut,
+			// The Python analysis sidecar (ADR 0001). These are the only commands that can be
+			// slow, and the only ones that read a file the app did not write itself.
+			sidecar::list_replays,
+			sidecar::scan_library,
+			sidecar::analyze_replay,
+			sidecar::replay_build_order
 		])
 		// The shortcut is registered from inside `setup` rather than by the builder so a
 		// failure is recoverable. On Wayland registration is expected to fail — the plugin

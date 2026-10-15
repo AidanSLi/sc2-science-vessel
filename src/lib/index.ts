@@ -7,6 +7,7 @@
  * alphabetical so it stays scannable.
  */
 
+export * from './analysis';
 export * from './builds';
 export * from './clock';
 export * from './client-api';
