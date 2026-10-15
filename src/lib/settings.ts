@@ -8,6 +8,7 @@
  */
 
 import { isTauri } from './client-api';
+import type { Matchup } from './types';
 
 /** The settings the shell persists and exposes. Mirrors `src-tauri/src/settings.rs`. */
 export interface AppSettings {
@@ -15,13 +16,28 @@ export interface AppSettings {
 	overlayShortcut: string;
 	/** Directories scanned for `.SC2Replay` files, in the order the user added them. */
 	replayRoots: string[];
+	/**
+	 * Build order id to load per matchup, e.g. `{ ZvP: 'bundled-123' }`.
+	 *
+	 * A key may be a wildcard (`ZvX`) which is used when no exact matchup entry exists, so a
+	 * player with one build per race does not have to triplicate it. Empty means no presets,
+	 * which the overlay treats as "use the first build for the matchup".
+	 */
+	buildPresets: PresetMap;
 }
+
+/** Matchup (or `ZvX` wildcard) to build order id. */
+export type PresetMap = Partial<Record<Matchup, string>>;
 
 /** The accelerator used when nothing has been chosen, matching the Rust default. */
 export const DEFAULT_OVERLAY_SHORTCUT = 'Ctrl+Alt+O';
 
 /** The settings used when the shell is unavailable, matching the Rust defaults. */
-const FALLBACK_SETTINGS: AppSettings = { overlayShortcut: DEFAULT_OVERLAY_SHORTCUT, replayRoots: [] };
+const FALLBACK_SETTINGS: AppSettings = {
+	overlayShortcut: DEFAULT_OVERLAY_SHORTCUT,
+	replayRoots: [],
+	buildPresets: {}
+};
 
 /** Outcome of a rebind attempt, so the UI can distinguish success from substitution. */
 export interface RebindResult {
@@ -46,7 +62,8 @@ export async function loadSettings(): Promise<AppSettings> {
 		// keeps the type honest.
 		return {
 			overlayShortcut: settings.overlayShortcut ?? DEFAULT_OVERLAY_SHORTCUT,
-			replayRoots: settings.replayRoots ?? []
+			replayRoots: settings.replayRoots ?? [],
+			buildPresets: settings.buildPresets ?? {}
 		};
 	} catch {
 		return { ...FALLBACK_SETTINGS };
@@ -83,6 +100,34 @@ export async function saveReplayRoots(roots: string[]): Promise<string[]> {
 	}
 	const { invoke } = await import('@tauri-apps/api/core');
 	return await invoke<string[]>('set_replay_roots', { roots });
+}
+
+/**
+ * Reads the configured per-matchup build presets.
+ *
+ * @returns The preset map, or an empty map outside the desktop shell. Empty is a normal
+ *     first-run state, not an error, so callers fall back rather than reporting a problem.
+ */
+export async function loadPresets(): Promise<{ presets: PresetMap }> {
+	const settings = await loadSettings();
+	return { presets: settings.buildPresets };
+}
+
+/**
+ * Stores the per-matchup build presets.
+ *
+ * The whole map is sent rather than one matchup, so clearing an entry removes it instead of
+ * having to distinguish "unset" from "empty" over IPC.
+ *
+ * @param presets Matchup (or wildcard) to build order id.
+ * @returns The stored map, with blank entries dropped by the shell.
+ */
+export async function savePresets(presets: PresetMap): Promise<PresetMap> {
+	if (!isTauri()) {
+		throw new Error('The desktop app is needed to remember build presets.');
+	}
+	const { invoke } = await import('@tauri-apps/api/core');
+	return await invoke<PresetMap>('set_build_presets', { presets });
 }
 
 /**

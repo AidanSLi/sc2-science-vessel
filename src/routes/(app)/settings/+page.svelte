@@ -7,14 +7,51 @@
 	 * answer that question themselves, with the raw response visible.
 	 */
 	import { onDestroy } from 'svelte';
+	import { exactMatchupBuilds } from '#lib/build-library';
 	import { CLIENT_API_PORT, isTauri, pollClientApi, type LiveState } from '#lib/client-api';
 	import {
 		acceleratorFromEvent,
 		DEFAULT_OVERLAY_SHORTCUT,
+		loadPresets,
 		loadSettings,
 		normaliseAccelerator,
-		saveOverlayShortcut
+		saveOverlayShortcut,
+		savePresets,
+		type PresetMap
 	} from '#lib/settings';
+	import type { BuildOrder, Matchup } from '#lib/types';
+
+	/**
+	 * The matchups worth offering a preset for, in the order they are shown.
+	 *
+	 * Every ordered pair, not just the player's own race: the app does not know which race the
+	 * user plays, and a preset for a matchup they never play is harmless while a missing one is
+	 * a build they cannot configure.
+	 */
+	const presetMatchups: Matchup[] = [
+		'ZvT',
+		'ZvP',
+		'ZvZ',
+		'TvZ',
+		'TvP',
+		'TvT',
+		'PvZ',
+		'PvT',
+		'PvP'
+	];
+
+	/**
+	 * The bundled library, grouped once by matchup.
+	 *
+	 * Grouped here rather than calling `buildsForMatchup` per dropdown because that function
+	 * falls back to wildcards, and a preset dropdown must list only builds a user could
+	 * reasonably pick for that exact matchup — the wildcard fallback is the overlay's job, and
+	 * it is already visible as the `First available` option.
+	 */
+	const buildsByMatchup: Partial<Record<Matchup, BuildOrder[]>> = {};
+	for (const matchup of presetMatchups) {
+		buildsByMatchup[matchup] = exactMatchupBuilds(matchup);
+	}
 
 	let live = $state<LiveState>({ status: 'idle', game: null, lastOkAt: null, detail: null });
 	let busy = $state(false);
@@ -27,6 +64,36 @@
 	let shortcutMessage = $state<string | null>(null);
 	let shortcutError = $state(false);
 
+	/** Per-matchup build presets, as stored by the shell. */
+	let presets = $state<PresetMap>({});
+	/** Message about the last preset change, since a silent save is indistinguishable from a lost one. */
+	let presetMessage = $state<string | null>(null);
+
+	/**
+	 * Stores one matchup's preset and reports the result.
+	 *
+	 * The entire map is re-sent rather than a single entry, so clearing a dropdown removes the
+	 * key instead of storing an empty id that would match no build and look configured.
+	 *
+	 * @param matchup The matchup (or wildcard) being set.
+	 * @param buildId The chosen build's id, or an empty string to clear it.
+	 */
+	async function updatePreset(matchup: Matchup, buildId: string) {
+		const next: PresetMap = { ...presets };
+		if (buildId) {
+			next[matchup] = buildId;
+		} else {
+			delete next[matchup];
+		}
+		presets = next;
+		try {
+			presets = await savePresets(next);
+			presetMessage = buildId ? `${matchup} set.` : `${matchup} cleared.`;
+		} catch (err) {
+			presetMessage = `Could not save: ${err instanceof Error ? err.message : String(err)}`;
+		}
+	}
+
 	const timer = setInterval(async () => {
 		if (busy) return;
 		live = await pollClientApi();
@@ -36,6 +103,7 @@
 		live = await pollClientApi();
 		const settings = await loadSettings();
 		overlayShortcut = settings.overlayShortcut;
+		presets = (await loadPresets()).presets;
 	})();
 
 	onDestroy(() => clearInterval(timer));
@@ -196,6 +264,48 @@
 		{#if shortcutMessage}
 			<p class="mt-3 text-xs {shortcutError ? 'text-amber-400' : 'text-ink-400'}">
 				{shortcutMessage}
+			</p>
+		{/if}
+	</div>
+
+	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
+		<h2 class="text-sm font-semibold">Build preset per matchup</h2>
+		<p class="mt-2 max-w-2xl text-sm text-ink-300">
+			When a game starts the overlay loads the build you chose for that matchup, so there is
+			nothing to pick mid-game. This is the only reason the overlay reads the client API
+			besides the clock: the races are fixed before the game starts and never change, so
+			choosing a fixed list from them is what a paper notepad would do.
+		</p>
+		<p class="mt-2 max-w-2xl text-xs text-ink-500">
+			A wildcard like <code class="rounded bg-surface-950 px-1">ZvX</code> is used when there is no
+			exact entry, so one build per race does not have to be entered three times. Leave a matchup
+			blank to use the first build in the library for it.
+		</p>
+
+		<div class="mt-4 grid gap-3 sm:grid-cols-2">
+			{#each presetMatchups as matchup (matchup)}
+				<label class="grid gap-1 text-xs text-ink-500">
+					{matchup}
+					<select
+						class="rounded border border-surface-700 bg-surface-950 px-2 py-1 text-sm text-ink-300"
+						value={presets[matchup] ?? ''}
+						onchange={(event) => updatePreset(matchup, event.currentTarget.value)}
+					>
+						<option value="">First available</option>
+						{#each buildsByMatchup[matchup] ?? [] as candidate (candidate.id)}
+							<option value={candidate.id}>{candidate.title}</option>
+						{/each}
+					</select>
+				</label>
+			{/each}
+		</div>
+
+		{#if presetMessage}
+			<p class="mt-3 text-xs text-ink-400">{presetMessage}</p>
+		{/if}
+		{#if !isTauri()}
+			<p class="mt-3 text-xs text-ink-500">
+				Presets are stored by the desktop app; a browser tab has nowhere to save them.
 			</p>
 		{/if}
 	</div>

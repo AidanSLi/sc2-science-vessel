@@ -55,6 +55,14 @@ pub struct Settings {
 	/// answerable in one click on a fresh install.
 	#[serde(default)]
 	pub replay_roots: Vec<String>,
+	/// Build order to load per matchup, keyed by `ZvP`-style matchup.
+	///
+	/// This is what makes the overlay open on the right build when a game starts. The key may
+	/// also be a wildcard (`ZvX`), which the frontend resolves after an exact match fails, so a
+	/// player who only has one build per race does not have to duplicate it across three
+	/// matchups. An empty map means "no presets configured", which is the first-run state.
+	#[serde(default)]
+	pub build_presets: std::collections::BTreeMap<String, String>,
 }
 
 /// Returns the default accelerator as an owned string, for serde's `default` attribute.
@@ -67,6 +75,7 @@ impl Default for Settings {
 		Self {
 			overlay_shortcut: default_overlay_shortcut(),
 			replay_roots: Vec::new(),
+			build_presets: std::collections::BTreeMap::new(),
 		}
 	}
 }
@@ -117,6 +126,34 @@ impl Settings {
 			.map_err(|err| format!("settings could not be serialised: {err}"))?;
 		std::fs::write(&path, text).map_err(|err| format!("{}: {err}", path.display()))
 	}
+}
+
+/// Normalises a per-matchup preset map.
+///
+/// Trims both sides and drops any entry whose key or value is blank, so clearing a dropdown in
+/// the UI removes the preset rather than storing an empty id. An empty id is the dangerous
+/// case: it *looks* configured, matches no build in the library, and the overlay would then
+/// fall back while the settings page still showed a choice.
+///
+/// Neither keys nor ids are validated against the build library here. The library lives in the
+/// frontend bundle, and a preset naming a build that a snapshot refresh removed is a normal
+/// outcome the overlay already handles by falling back.
+///
+/// # Arguments
+///
+/// * `presets` - Matchup (or `ZvX` wildcard) to build order id.
+///
+/// # Returns
+///
+/// The cleaned map.
+pub fn clean_presets(
+	presets: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+	presets
+		.into_iter()
+		.map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+		.filter(|(key, value)| !key.is_empty() && !value.is_empty())
+		.collect()
 }
 
 /// Lists directories that look like StarCraft II replay folders on this machine.
@@ -288,4 +325,74 @@ pub fn register_overlay_shortcut(app: &AppHandle, requested: &str) -> Result<Str
 		}
 	}
 	Err(last_error)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::collections::BTreeMap;
+
+	/// Builds a preset map from pairs, for terse test bodies.
+	fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+		pairs
+			.iter()
+			.map(|(key, value)| (key.to_string(), value.to_string()))
+			.collect()
+	}
+
+	#[test]
+	fn clean_presets_keeps_real_entries() {
+		let cleaned = clean_presets(map(&[("ZvP", "bundled-130000"), ("TvZ", "bundled-9")]));
+		assert_eq!(cleaned.len(), 2);
+		assert_eq!(cleaned["ZvP"], "bundled-130000");
+	}
+
+	#[test]
+	fn clean_presets_drops_blank_values() {
+		// The case this exists for: a cleared dropdown must remove the key, because an empty
+		// value would look configured while matching no build.
+		let cleaned = clean_presets(map(&[("ZvP", ""), ("ZvT", "   "), ("ZvZ", "ok")]));
+		assert_eq!(cleaned.len(), 1);
+		assert!(!cleaned.contains_key("ZvP"));
+		assert!(!cleaned.contains_key("ZvT"));
+		assert_eq!(cleaned["ZvZ"], "ok");
+	}
+
+	#[test]
+	fn clean_presets_drops_blank_keys() {
+		let cleaned = clean_presets(map(&[("", "bundled-1"), ("  ", "bundled-2")]));
+		assert!(cleaned.is_empty());
+	}
+
+	#[test]
+	fn clean_presets_trims_surrounding_space() {
+		// A trailing space in an id would not match the library's id and the preset would
+		// silently fall back, which looks like the preset was never saved.
+		let cleaned = clean_presets(map(&[(" ZvP ", " bundled-1 ")]));
+		assert_eq!(cleaned["ZvP"], "bundled-1");
+	}
+
+	#[test]
+	fn settings_without_presets_still_load() {
+		// A settings file written before presets existed must not fail to parse, or upgrading
+		// would silently reset the user's replay folders and shortcut.
+		let json = r#"{"overlayShortcut":"Ctrl+Alt+U","replayRoots":["/replays"]}"#;
+		let settings: Settings = serde_json::from_str(json).expect("old settings must parse");
+		assert_eq!(settings.overlay_shortcut, "Ctrl+Alt+U");
+		assert_eq!(settings.replay_roots, vec!["/replays".to_string()]);
+		assert!(settings.build_presets.is_empty());
+	}
+
+	#[test]
+	fn presets_round_trip_through_json() {
+		let original = Settings {
+			build_presets: map(&[("ZvP", "bundled-1"), ("ZvX", "bundled-2")]),
+			..Settings::default()
+		};
+		let text = serde_json::to_string(&original).expect("must serialise");
+		let loaded: Settings = serde_json::from_str(&text).expect("must parse");
+		assert_eq!(loaded.build_presets, original.build_presets);
+		// Wildcards are just keys, so they survive alongside exact matchups.
+		assert_eq!(loaded.build_presets["ZvX"], "bundled-2");
+	}
 }

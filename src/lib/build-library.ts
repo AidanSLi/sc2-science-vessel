@@ -197,3 +197,52 @@ export function buildsForMatchup(matchup: string): BuildOrder[] {
 	}
 	return [...exact, ...wildcard];
 }
+
+/**
+ * Chooses the build to follow for a matchup, honouring a per-matchup preset.
+ *
+ * The lookup order is exact matchup, then `<own>vX` wildcard, then the first build for the
+ * matchup, then the supplied fallback. The wildcard step is what lets a player keep one build
+ * per race instead of triplicating it, and the `fallback` argument keeps this function from
+ * depending on the sample build — which the overlay needs as a last resort so it always has
+ * something to show.
+ *
+ * A preset naming a build that is no longer in the library is not an error: refreshing the
+ * snapshot can remove ids, so the lookup falls through exactly as if no preset had been set.
+ * Silently showing a stale build id is impossible because ids are resolved against the current
+ * library every time.
+ *
+ * @param presets Matchup (or wildcard) to build id, as stored in settings.
+ * @param matchup The matchup to resolve for.
+ * @param fallback Used when the library has nothing for the matchup at all.
+ * @returns The build to follow, and whether a preset actually selected it.
+ */
+export function resolvePresetBuild(
+	presets: Partial<Record<string, string>>,
+	matchup: string,
+	fallback: BuildOrder
+): { build: BuildOrder; fromPreset: boolean } {
+	const candidates = buildsForMatchup(matchup);
+	const exact = presets[matchup];
+	const wildcard = presets[`${matchup[0]}vX`];
+	for (const wanted of [exact, wildcard]) {
+		if (!wanted) continue;
+		const chosen = candidates.find((candidate) => candidate.id === wanted);
+		if (chosen) return { build: chosen, fromPreset: true };
+	}
+	return { build: candidates[0] ?? fallback, fromPreset: false };
+}
+
+/**
+ * Keeps only the builds written for exactly this matchup.
+ *
+ * `buildsForMatchup` deliberately widens to wildcards, which is right for the overlay but wrong
+ * for a preset dropdown: listing `ZvX` builds under `ZvP` would let a user "set" a preset that
+ * the wildcard fallback already covers, hiding which build is actually being chosen.
+ *
+ * @param matchup The matchup to filter to.
+ * @returns The exactly-matching builds.
+ */
+export function exactMatchupBuilds(matchup: string): BuildOrder[] {
+	return bundledBuilds.filter((build) => build.matchup === matchup);
+}

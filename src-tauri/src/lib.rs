@@ -196,6 +196,37 @@ fn set_replay_roots(app: tauri::AppHandle, roots: Vec<String>) -> Result<Vec<Str
 	Ok(normalised)
 }
 
+/// Sets the build order loaded for each matchup.
+///
+/// Takes the whole map rather than one matchup at a time, for the same reason
+/// `set_replay_roots` takes the whole list: it is small, it is edited as a set, and a crash
+/// mid-edit cannot leave a half-applied preset. Keys and ids are trimmed of whitespace and
+/// empty entries are dropped, so clearing a dropdown in the UI actually clears the preset
+/// instead of storing an empty id that matches nothing.
+///
+/// Neither keys nor ids are validated against the build library here. The library lives in
+/// the frontend bundle, and a preset naming a build that no longer exists after a snapshot
+/// refresh is a normal outcome that the overlay already handles by falling back.
+///
+/// # Arguments
+///
+/// * `presets` - Matchup (or `ZvX` wildcard) to build order id.
+///
+/// # Returns
+///
+/// The stored map, with empty entries removed.
+#[tauri::command]
+fn set_build_presets(
+	app: tauri::AppHandle,
+	presets: std::collections::BTreeMap<String, String>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+	let cleaned = settings::clean_presets(presets);
+	let mut current = Settings::load(&app);
+	current.build_presets = cleaned.clone();
+	current.save(&app)?;
+	Ok(cleaned)
+}
+
 /// Builds and runs the application.
 ///
 /// Registers the plugins the shell needs and wires the global shortcut that toggles the
@@ -215,6 +246,7 @@ pub fn run() {
 			set_overlay_shortcut,
 			suggest_replay_roots,
 			set_replay_roots,
+			set_build_presets,
 			// The Python analysis sidecar (ADR 0001). These are the only commands that can be
 			// slow, and the only ones that read a file the app did not write itself.
 			sidecar::list_replays,

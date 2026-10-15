@@ -11,16 +11,41 @@
 	 * The clock comes from the SC2 Client API (ADR 0004). When it is unavailable the
 	 * overlay says so and offers a manual fallback rather than pretending to track a game
 	 * it cannot see.
+	 *
+	 * The only thing the client API is used for beyond the clock is *which matchup this is*,
+	 * so the right preset can be shown without the player choosing it mid-game. Reading the
+	 * races is not reacting to anything: they are fixed before the game starts, they never
+	 * change, and the guide itself is a fixed list either way. It is the equivalent of the
+	 * player having opened the right page in a notebook beforehand.
 	 */
 	import { onDestroy } from 'svelte';
 	import { advance } from '#lib/builds';
+	import { resolvePresetBuild } from '#lib/build-library';
 	import { formatGameTime, matchupOf } from '#lib/clock';
 	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
+	import { loadPresets } from '#lib/settings';
 	import { sampleBuildOrder } from '#lib/sample-build';
-	import type { Matchup } from '#lib/types';
+	import type { BuildMatchup, BuildOrder, Matchup } from '#lib/types';
 
-	/** Which build is loaded. Only one sample exists until the sidecar lands (Phase 1). */
-	let build = $state(sampleBuildOrder);
+	/**
+	 * The build being followed.
+	 *
+	 * Chosen from the matchup preset, falling back to the sample so the overlay always has
+	 * something to show. Never set from anything the players *do* — only from the matchup,
+	 * which is fixed before the first unit exists.
+	 */
+	let build = $state<BuildOrder>(sampleBuildOrder);
+
+	/** The matchup the current build was picked for, so the header can say what is loaded. */
+	let presetMatchup = $state<BuildMatchup | null>(null);
+
+	/**
+	 * Per-matchup build presets, as configured on the settings page.
+	 *
+	 * Empty means "no preset", which is a normal first-run state, so the overlay falls back
+	 * to the sample rather than showing nothing.
+	 */
+	let presets = $state<Partial<Record<Matchup, string>>>({});
 
 	/** Latest client state. `status` drives every honesty message on screen. */
 	let live = $state<LiveState>({
@@ -64,6 +89,7 @@
 
 	// Poll once immediately so the first second is not spent showing "connecting".
 	void (async () => {
+		await loadPresetSettings();
 		applyLiveState(await pollClientApi());
 	})();
 
@@ -83,6 +109,40 @@
 		if (!players || players.length < 2) return null;
 		return matchupOf(players[0].race, players[1].race);
 	});
+
+	/**
+	 * Loads the preset build whenever the matchup changes.
+	 *
+	 * Keyed on the matchup rather than on the poll, so this runs once per game instead of once
+	 * per second, and a game that ends and restarts with the same matchup does not reload. The
+	 * lookup prefers an exact `ZvP` preset and then a `ZvX` wildcard, mirroring the library.
+	 *
+	 * It only ever fires on a *change* to a matchup the client reports, so a player who picks
+	 * their race randomly is not switched around mid-game: the client reports the settled race,
+	 * and a preset is chosen from that once.
+	 */
+	$effect(() => {
+		const matchup = liveMatchup;
+		if (!matchup) return;
+		const { build: next, fromPreset } = resolvePresetBuild(presets, matchup, sampleBuildOrder);
+		if (next.id === build.id) return;
+		build = next;
+		presetMatchup = fromPreset ? next.matchup : null;
+	});
+
+	/**
+	 * Loads the configured presets once, on mount.
+	 *
+	 * Read from settings rather than sent over an event so the overlay works when it is opened
+	 * before the main window has ever been shown, which is the normal case at game start.
+	 */
+	async function loadPresetSettings() {
+		try {
+			presets = (await loadPresets()).presets;
+		} catch {
+			// A browser has no settings to read; the sample build stands.
+		}
+	}
 
 	/**
 	 * One honest sentence describing the live connection.
@@ -150,7 +210,7 @@
 		<div class="min-w-0">
 			<h1 class="truncate text-sm font-semibold">{build.title}</h1>
 			<p class="tabular text-xs text-ink-500">
-				{liveMatchup ?? build.matchup}{#if usingManual} · manual{/if}
+				{liveMatchup ?? presetMatchup ?? build.matchup}{#if usingManual} · manual{/if}
 			</p>
 		</div>
 		<div class="flex items-center gap-1">

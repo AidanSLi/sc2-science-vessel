@@ -12,11 +12,98 @@ import {
 	bundledBuilds,
 	bundledSnapshotDate,
 	bundledSnapshotSource,
+	exactMatchupBuilds,
 	isKnownMatchup,
 	referenceSteps,
+	resolvePresetBuild,
 	splitRepeats,
 	toBuildOrder
 } from './build-library';
+import { sampleBuildOrder } from './sample-build';
+import type { BuildOrder } from './types';
+
+describe('resolvePresetBuild', () => {
+	// A build written for the exact matchup, so the preset path is exercised on real data.
+	const zvt = buildsForMatchup('ZvT')[0];
+	const zvx = bundledBuilds.find((build) => build.matchup === 'ZvX');
+
+	it('uses an exact matchup preset', () => {
+		const { build, fromPreset } = resolvePresetBuild({ ZvT: zvt.id }, 'ZvT', sampleBuildOrder);
+		expect(build.id).toBe(zvt.id);
+		expect(fromPreset).toBe(true);
+	});
+
+	it('falls back to the ZvX wildcard when there is no exact entry', () => {
+		// The point of the wildcard: one build per race, not one per matchup. It is only
+		// assertable when the snapshot actually contains a ZvX build, which it does today; if a
+		// refresh drops them this test should be revisited rather than silently skipped.
+		expect(zvx).toBeDefined();
+		const { build, fromPreset } = resolvePresetBuild({ ZvX: zvx!.id }, 'ZvT', sampleBuildOrder);
+		expect(build.id).toBe(zvx!.id);
+		expect(fromPreset).toBe(true);
+	});
+
+	it('prefers the exact matchup preset over the wildcard', () => {
+		const { build } = resolvePresetBuild({ ZvT: zvt.id, ZvX: zvx!.id }, 'ZvT', sampleBuildOrder);
+		expect(build.id).toBe(zvt.id);
+	});
+
+	it('ignores a preset naming a build that is no longer in the library', () => {
+		// A snapshot refresh can remove ids. Treating that as "no preset" is the honest response;
+		// erroring would leave the overlay with nothing to show at the start of a game.
+		const { build, fromPreset } = resolvePresetBuild(
+			{ ZvT: 'bundled-does-not-exist' },
+			'ZvT',
+			sampleBuildOrder
+		);
+		expect(build.id).not.toBe('bundled-does-not-exist');
+		expect(fromPreset).toBe(false);
+	});
+
+	it('falls past the wildcard when the wildcard id is also stale', () => {
+		const { build } = resolvePresetBuild(
+			{ ZvT: 'gone', ZvX: 'also-gone' },
+			'ZvT',
+			sampleBuildOrder
+		);
+		expect(buildsForMatchup('ZvT').some((candidate) => candidate.id === build.id)).toBe(true);
+	});
+
+	it('uses the first library build when nothing is configured', () => {
+		const { build, fromPreset } = resolvePresetBuild({}, 'ZvT', sampleBuildOrder);
+		expect(build.id).toBe(buildsForMatchup('ZvT')[0].id);
+		expect(fromPreset).toBe(false);
+	});
+
+	it('uses the fallback when the library has nothing for the matchup', () => {
+		// `TvT` may or may not have exact or wildcard builds; the fallback is what guarantees the
+		// overlay always has something to show, so this asserts the last link in the chain rather
+		// than the current snapshot contents.
+		const { build, fromPreset } = resolvePresetBuild({}, 'XvX', sampleBuildOrder);
+		expect(build).toBe(sampleBuildOrder);
+		expect(fromPreset).toBe(false);
+	});
+});
+
+describe('exactMatchupBuilds', () => {
+	it('excludes wildcard builds that buildsForMatchup would include', () => {
+		// The preset dropdown must not offer a ZvX build under ZvP: the overlay already applies
+		// the wildcard itself, so listing it here would let a user set a preset that changes
+		// nothing while looking like a choice.
+		for (const matchup of ['ZvT', 'ZvP', 'ZvZ'] as const) {
+			for (const build of exactMatchupBuilds(matchup)) {
+				expect(build.matchup).toBe(matchup);
+			}
+			expect(buildsForMatchup(matchup).length).toBeGreaterThanOrEqual(
+				exactMatchupBuilds(matchup).length
+			);
+		}
+	});
+
+	it('returns empty rather than throwing for a matchup the library lacks', () => {
+		expect(exactMatchupBuilds('XvX')).toEqual([]);
+	});
+});
 
 describe('splitRepeats', () => {
 	it('splits the repeat suffix SpawningTool writes into the name', () => {

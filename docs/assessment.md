@@ -353,21 +353,30 @@ the largest unknown in the project.
 
 ## 7. Proposed roadmap
 
-- **Phase 0 — de-risk (½ day).** Confirm port 6119. Confirm a layer-shell "always on top,
-  click-through, over the game" spike on this machine. Confirm a hotkey path (XDG portal).
-- **Phase 1 — parser + store (2–3 days).** Python sidecar: sidecar scans the replay dir,
-  parses at header level, caches `PlayerStatsEvent` series + build orders into SQLite.
-  A CLI that prints the 19 features as JSON. No UI.
-- **Phase 2 — analysis UI (1–2 weeks).** SvelteKit views over the JSON: worker graph,
-  resource/loss graphs, build order with discrepancy markers, tech/expansion timeline,
-  battle timeline, per-matchup reference builds.
-- **Phase 3 — overlay (1–2 weeks).** Client-API poller, build-order view driven by
-  `displayTime`, matchup presets, hotkey toggle, KDE layer-shell window first.
-- **Phase 4 — extras.** MMR/progression tracking from `gamemetadata.json`, SALT
-  encoder, strategy classifier, replay-scan-on-launch, MAC/Windows overlay paths.
+Status as of 2026-10-15: phase 0 and phase 1 are done; phase 2 is largely done.
 
-Phases 1–2 are the parts I am confident about; phase 3 is the part where the spikes in
-phase 0 decide the design.
+- **Phase 0 — de-risk (½ day). DONE.** Port 6119 confirmed on a real game: `curl
+  http://localhost:6119/game` returns `{"isReplay":false,"displayTime":…,"players":[…]}`,
+  owned by `wineserver`. The clock is 1:1 with real time (measured over 1181 samples), and the
+  live race string is a four-character code (`"Prot"`), which the parser now accepts. The
+  "always on top, click-through" half ships as an ordinary always-on-top window; the
+  layer-shell surface is still open (ADR 0003). See ADR 0004 and ADR 0005.
+- **Phase 1 — parser + store. DONE.** The Python sidecar (`sidecar/sc2sv/`) is a CLI that writes
+  one JSON document per replay, with a CLI-addressable cache on disk. Not SQLite: every entry is
+  written once per replay and read whole, so a database would add a dependency and a locking
+  story for nothing. `analyse_replay` takes ~0.3–1 s cold and ~0 warm.
+- **Phase 2 — analysis UI. MOSTLY DONE.** The matches list scans registered folders and reads
+  headers; the analysis route renders worker graphs, resource swing, engagements, the battle
+  map, tech/expansion timelines, energy downtime, composition, and per-player build-order
+  comparison against the bundled SpawningTool library, with the ±10 s discrepancy markers asked
+  for. Remaining: creeping refinement of what each panel is worth showing.
+- **Phase 3 — overlay. IN PROGRESS.** The client-API poller, the clock-driven step list, the
+  manual fallback and the hotkey all exist. Per-matchup presets are landing now. Remaining: the
+  KDE layer-shell window, and macOS/Windows overlay paths.
+- **Phase 4 — extras.** MMR/progression tracking from `gamemetadata.json`, SALT
+  encoder (the reference implementation is decode-only, so an encoder has to be written),
+  strategy classifier, refresh-on-launch. Note the bundled build library already removes
+  "import builds" from this list.
 
 ---
 

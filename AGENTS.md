@@ -184,6 +184,35 @@ and there is no extra multiplier to apply.
 - Do not use `as any`-equivalents to silence type errors, and do not add a dependency to
   work around a missing field — check the replay JSON first.
 
+## Data boundaries and the overlay
+
+- **The overlay's only inputs are the game clock and the matchup.** The user's rule is that the
+  advisor must never react to the opponent or to the player — only to the predetermined times —
+  because anything further treads into cheating. Reading the clock and the two races is the
+  whole permitted surface: races are fixed before the first unit exists and never change, and the
+  guide is a fixed list either way. So `src/routes/overlay/+page.svelte` may use `displayTime`
+  and `matchupOf(players[0].race, players[1].race)`, and nothing else from the client API — no
+  supply, no unit counts, no positions, and no reacting to anything the game does after it
+  starts. Never add a suggestion, an alert, or an adaptation.
+- **Replay analysis never touches the network; only `tools/refresh_build_snapshot.py` does.** The
+  build library it writes is committed as `src/lib/builds.json` and inlined by a static import,
+  so the app works offline. A scrape failure keeps the previous snapshot; writing an empty one
+  would look current and be wrong.
+- **A build's matchup is a `BuildMatchup` (`ZvX` is real); a game's is a `Matchup`.** They are
+  deliberately different types, so widening the build type cannot quietly weaken the game type
+  into allowing a wildcard a game can never produce.
+- **`BuildStep.note` is load-bearing.** 19 steps in the bundled snapshot are named `Action` and
+  carry their entire instruction in the note; without it they render as a bare meaningless
+  `Action`.
+- **Timeline panels share `cursorSecond`.** The feature list asks for the map to show where a
+  battle happened when hovering a change in the graph, so the cursor is owned by the route page
+  and passed down to every chart, never held per-chart.
+- **Per-matchup presets resolve exact → `<own>vX` wildcard → first library build → sample.** See
+  `resolvePresetBuild` in `src/lib/build-library.ts`. A preset naming a build a snapshot refresh
+  removed falls through as if unset; erroring would leave the overlay blank at game start. The
+  settings dropdown uses `exactMatchupBuilds`, not `buildsForMatchup`, so a wildcard the overlay
+  already applies cannot be offered as a choice that changes nothing.
+
 ## Frontend
 
 - Import from `#lib/...`, not `$lib/...`. SvelteKit 3 dropped the implicit `$lib` alias in
