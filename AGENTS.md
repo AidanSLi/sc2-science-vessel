@@ -118,8 +118,16 @@ wall clock; replay `Duration` matched `frames / 16` within 1% across 722 replays
 - **The global shortcut cannot be tested by injecting keys on this machine.** XTEST
   synthesises keys but they do **not** reach XGrabKey grabs through Xwayland: a bare
   `XGrabKey` + XTEST test showed the grab never firing, so a hotkey test that "did nothing"
-  proves nothing about the app. Verify the shortcut by hand, or wait for the XDG
-  GlobalShortcuts portal (ADR 0003) which is testable through D-Bus.
+  proves nothing about the app. To test the *registration* path instead, hold the key with an
+  X `grab_key` in another process (see `/tmp/fallback-test.sh` for the shape): that makes a
+  conflict deterministic and proves the fallback walk without pressing anything. Real presses
+  still need a human, or the XDG GlobalShortcuts portal (ADR 0003), which is testable over
+  D-Bus.
+- **A key held by another *X client* does not always block a Tauri shortcut registration.**
+  Seeding `Ctrl+Alt+B` with a held grab did **not** fail registration in the app, while
+  seeding `Ctrl+Alt+F9` with the same technique did. So an app-level key that appears free
+  from `kglobalshortcutsrc` is not proof it is free; and conversely, a shortcut that registers
+  is not proof the key reaches the app. Do not claim either without a real keypress.
 - **Never read the game process's memory and never write to the game.** The only
   sanctioned live input is the SC2 Client API on `localhost:6119`. This keeps the app on
   the benign side of Blizzard's discretionary EULA clause.
