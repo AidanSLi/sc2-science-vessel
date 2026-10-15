@@ -7,8 +7,9 @@
 - **TypeScript + SvelteKit + Tailwind** for the UI.
 - **Tauri 2** for the shell. Do **not** design anything that requires Tauri 3 / GTK4:
   the GTK4 migration (wry#1474) has been stalled since 2025-01-30 with no landing date.
-- Package manager: **`uv`** for Python (`uv venv`, `uv pip install`); **`npm`** for JS.
-  `pnpm` is not installed on the reference machine.
+- Package manager: **`uv`** for Python (`uv venv`, `uv pip install`); **`pnpm`** for JS
+  (12.11.2 here). Use pnpm, never npm — the global preference is recorded in
+  `~/.pi/agent/AGENTS.md`, and `package.json` pins `packageManager`.
 
 ## Style
 
@@ -54,6 +55,12 @@
   `tests/fixtures/replays/`. Do not unit-test metrics against synthetic data only — the
   failure mode that matters is "the field name is different in this build".
 - The test suite must run with **no network**.
+- Fixture replays are **not** committed (see `tests/fixtures/replays/README.md`). Tests that
+  need one must `pytest.skip` with a message naming the file to copy in, so a fresh clone
+  still goes green. `tests/conftest.py` owns resolving that path.
+- Parsing a real replay takes 2-3 ms at header level but **0.3-1 s once events are decoded**
+  (`load_level=4`, tens of thousands of events). Keep fixture tests to the handful of replays
+  that must actually be parsed, and load a replay once per test module where possible.
 
 ## The game clock (do not get this wrong again)
 
@@ -76,26 +83,31 @@ This was initially recorded backwards and cost real effort to undo, so it is sta
   that distinction matters ("how long since the last worker"), say which one is meant.
 
 Evidence on this machine: the live client API's `displayTime` advanced 309 s over 304 s of
-wall clock; replay `Duration` matched `frames / 16` within 1% across 722 replays.
+wall clock; replay `Duration` matched `frames / 16` within 1% across 722 replays. Re-measured
+across the whole 783-replay library: the median of `Duration / (frames/16)` is 1.0000 over 708
+LotV replays, and `Duration / (frames/22.4)` is 1.4001, so `frames/16` is the displayed clock
+and there is no extra multiplier to apply.
 
 ## Hard rules learned the hard way
 
-- **The game clock runs 1:1 with real time.** From Legacy of the Void onward there is no
-  "Blizzard time" offset: at `Faster` (the ladder and custom-game default) the SC2 clock
-  advances at the same rate as wall clock, so a game clock value is also a real-time value.
-  The pre-LotV 1.4 factor does **not** apply. Verified two ways: the live client API's
-  `displayTime` advanced 309 s over 304 s of wall clock, and replay `Duration` matches
-  `frames / 16` within 1% on 722 replays.
-- **`sc2reader`'s `replay.length` is in *game* seconds and is a display string, not a
-  duration.** `resources.py` computes it as `frames / (16 * 1.4)` for any build >= 34784
-  (i.e. all LotV replays) even though `GAME_SPEED_FACTOR["LotV"]["Faster"]` is 1.0, so the
-  prefix "real" in `real_length` is a misnomer. Use `frames / 16`. Do not use `replay.length`
-  as a timeline length: it under-reports LotV games by ~1.4x.
-- **A game clock stops while the game is paused**, so it is not elapsed real time. Anything
-  that needs elapsed wall time (e.g. "time since you last made a worker") must say so
-  explicitly rather than assuming the two are interchangeable.
-- **`PlayerStatsEvent` is sampled every 10 game seconds.** Never claim sub-10-second
-  precision for a stat derived from it; use per-unit tracker events when you need more.
+- **`load_level=4` is required to get any events at all.** `load_level=2` (details) returns
+  `game_events == []` and `tracker_events == []`, and `load_level=0` additionally returns no
+  players, no map, no speed and no game type. Anything that reads events must load level 4;
+  anything that only reads headers should still use 2, because 0 is silently empty rather
+  than raising. Cost: about 2-3 ms per replay either way.
+- **`event.player` is authoritative; `event.pid` is a 0-based index into `replay.players`,
+  not `Player.pid`.** On the reference library `event.player is replay.players[event.pid]`
+  holds for 100% of events, while `event.pid == event.player.pid` holds for 0% of them. Real
+  IDs start at 1, so using `event.pid` as an ID mislabels every game by one player — and it
+  looks plausible because player 1's events still land on a player 1.
+- **The energy abilities have non-obvious names**, and they are the only way to build the
+  inject/MULE/chrono features: Zerg inject is `SpawnLarva`, Terran MULE is `CalldownMULE`,
+  Protoss chrono boost is `ChronoBoostEnergyCost`. There is no `Inject` or `MULE` ability
+  name. All three carry `event.player` and a `second`, and the Zerg/Terran ones carry a
+  `location`, so a hatch/CC can be identified from the cast position.
+- **`PlayerStatsEvent` is sampled every 10 game seconds** (observed cadences `[0, 10]`,
+  `[0, 5, 10]`, `[0, 3, 10]`). Never claim sub-10-second precision for a stat derived from
+  it; use per-unit tracker events when you need more.
 - **`UnitDiedEvent.unit_type_name` is `None`.** Join deaths to births on `unit_id` to
   recover the unit type. Do not trust the field.
 - **Filter cosmetic noise from `UpgradeCompleteEvent`** (`Spray*`, `Reward*`, `Dance*`),
@@ -104,9 +116,27 @@ wall clock; replay `Duration` matched `frames / 16` within 1% across 722 replays
 - **`replay.gamemetadata.json` is a member inside the MPQ archive, not a file beside the
   replay.** (MMR, `Duration`, map, per-player results live there.) Read it through the
   archive; `Path(...).with_suffix(".SC2Replay.gamemetadata.json")` silently finds nothing.
-  Also: one replay in the library carries `MMR: -36400` (an arcade map), so validate before
-  using. `Duration` is in **seconds**, 1:1 with real time, and matches `frames / 16` within
-  1% — so it is safe to use, unlike `sc2reader`'s `replay.length`.
+  Its `Players` is a **list**, not a dict keyed by player id, and only ranked games carry an
+  `MMR` at all (251 of 783 here). One replay in the library carries `MMR: -36400` (an arcade
+  map), so validate before using. `Duration` is in **seconds**, 1:1 with real time, and
+  matches `frames / 16` — so it is safe to use, unlike `sc2reader`'s `replay.length`.
+- **`spawningtool`'s step `time` strings are on the wrong clock; use `frame` instead.**
+  `spawningtool/lotv_constants.py` hardcodes `FRAMES_PER_SECOND = 22.4` — which is
+  `16 * 1.4`, the pre-LotV Faster factor — and formats its `M:SS` labels with that divisor.
+  The `frame` values are raw engine frames and are correct, so the fix is
+  `second = frame / 16`. `sidecar/sc2sv/builds.py` owns this conversion and is the only
+  place that should touch `spawningtool`'s step shape. Verified by joining the two streams:
+  `spawningtool`'s pylon frames read `[44.44, 168.69, 234.00, 307.75, …]` at `/16` while the
+  tracker stream's `UnitInitEvent` seconds are `[44, 168, 234, 307, …]`, and the median
+  disagreement across 826 matched steps is 4.3 s, versus tens of seconds at `/22.4`. This is
+  why it matters: the build-order comparison has a **+/- 10 second** tolerance, so a 1.4x
+  clock error would put every step 40% off and report every build as mistimed, with no error
+  anywhere to point at.
+- **`spawningtool`'s `parse_replay` result has no top-level `build` step list.** Top-level
+  `build` is the build **number** (`93333`). Steps live at `players[pid]["buildOrder"]`,
+  keyed by the **string** `"1"`/`"2"` rather than by int pid, and each step is
+  `{frame, time, name, supply, is_worker, clock_position, is_chronoboosted}`. Ability and
+  unit-loss entries have no `supply` key at all, so read it defensively.
 - **The overlay window is created only by `toggle_overlay` in `src-tauri/src/lib.rs`.**
   Never build it from the frontend with `new WebviewWindow('overlay', …)`. The flags that
   make it usable — borderless, always-on-top, click-through, `skip_taskbar` — are applied

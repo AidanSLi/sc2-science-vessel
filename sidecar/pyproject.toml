@@ -1,0 +1,29 @@
+[project]
+name = "sc2sv-sidecar"
+version = "0.1.0"
+description = "Replay parsing and metric extraction for sc2-science-vessel. JSON in, JSON out."
+# 3.11 rather than 3.9 because the metrics use `X | Y` type unions at runtime in dataclass
+# fields, and `Self`-style patterns that need 3.11+. The reference venv is 3.14.
+requires-python = ">=3.11"
+# Pinned exactly. The whole sidecar is a compatibility shim over two third-party decoders,
+# so an unpinned upgrade can change a field name under us and silently corrupt every metric.
+# Bump deliberately, then re-run `pytest` against the fixtures in tests/fixtures/replays/.
+dependencies = [
+	"sc2reader==1.9.0",
+	"spawningtool==3.0.0",
+	"mpyq==0.2.5",
+]
+
+[project.scripts]
+sc2sv = "sc2sv.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sc2sv"]
+
