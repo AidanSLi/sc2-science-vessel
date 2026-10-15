@@ -4,9 +4,9 @@
 	"version": "0.0.0",
 	"identifier": "dev.aidansli.sc2-science-vessel",
 	"build": {
-		"beforeDevCommand": "npm run dev",
+		"beforeDevCommand": "pnpm run dev",
 		"devUrl": "http://localhost:1420",
-		"beforeBuildCommand": "npm run build",
+		"beforeBuildCommand": "pnpm run build",
 		"frontendDist": "../build"
 	},
 	"app": {
@@ -30,7 +30,11 @@
 	},
 	"bundle": {
 		"active": true,
-		"targets": ["deb", "rpm", "appimage"],
+		"targets": [
+			"deb",
+			"rpm",
+			"appimage"
+		],
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",
