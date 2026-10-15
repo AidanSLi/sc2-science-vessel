@@ -33,17 +33,21 @@ export function formatGameTime(secondsInGame: number): string {
 }
 
 /**
- * Converts the game clock to wall-clock seconds at a given game-speed multiplier.
+ * Reports that the game clock advances at the same rate as real time.
  *
- * The replay clock is game time and never advances while a game is paused, so this is
- * only meaningful once the game has finished (or for reasoning about a recording).
- * Ladder and custom games default to `Faster`, where the factor is 1.4 — measured across
- * 722 replays (531 at exactly 1.40, 95 at 1.41).
+ * From Legacy of the Void onward the SC2 game clock runs **1:1** with wall-clock time at
+ * `Faster`, the ladder and custom-game default. The older "Blizzard time" offset (where one
+ * in-game second was about 1.4 real seconds) was a Wings of Liberty / Heart of the Swarm
+ * behaviour and no longer applies. Confirmed two ways on this machine: the live client API
+ * reported `displayTime` advancing 309 s over 304 s of wall clock (~1:1, over a 5-minute
+ * sample), and replay `Duration` in `replay.gamemetadata.json` matches `frames / 16` to
+ * within 1% across 722 replays while differing from the in-game clock by ~1.4x — which shows
+ * the game *clock* is not 1.4x real time, and that sc2reader's `replay.length` is the field
+ * that is wrong, not the clock.
  *
- * @param secondsInGame Seconds on the game clock.
- * @param speedMultiplier Game-speed factor; 1.4 is `Faster`, the ladder default.
- * @returns Wall-clock seconds.
+ * There is deliberately no conversion helper here. A function taking a speed multiplier would
+ * invite the assumption that the multiplier is ever something other than 1, which is how the
+ * 1.4 factor came to be applied in the first place. Anywhere a real-time figure is needed,
+ * it equals the game-clock figure, with pauses being the only difference between them.
  */
-export function gameToRealSeconds(secondsInGame: number, speedMultiplier = 1.4): number {
-	return secondsInGame * speedMultiplier;
-}
+export const GAME_CLOCK_IS_REAL_TIME = true;

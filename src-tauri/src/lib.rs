@@ -18,6 +18,10 @@
 
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+mod settings;
+
+pub use settings::Settings;
+
 /// Label of the always-on-top build-order overlay window, as declared in `tauri.conf.json`.
 pub const OVERLAY_WINDOW_LABEL: &str = "overlay";
 
@@ -106,31 +110,90 @@ fn frontend_ready(app: tauri::AppHandle) {
 	show_main_window(&app);
 }
 
+/// Returns the user's settings for the settings page to render.
+///
+/// The frontend cannot read the config directory itself, so settings live in Rust and are
+/// fetched over IPC. `overlay_shortcut` is the *registered* key, which may differ from what
+/// the user last asked for if that key was taken (see `register_overlay_shortcut`) — the UI
+/// must show the truth, or the player would keep pressing a dead combination mid-game.
+///
+/// @param app The running app handle.
+/// @returns The current settings.
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> Settings {
+	Settings::load(&app)
+}
+
+/// Rebinds the overlay toggle key and persists it.
+///
+/// Re-registers immediately rather than deferring to the next launch, because the whole point
+/// of changing the key is to use it after the game has already started. Falls back through
+/// the same candidate list as startup when the requested key is taken, and returns the key
+/// that ended up registered so the UI can report the substitution instead of silently
+/// disagreeing with what the player pressed.
+///
+/// @param app The running app handle.
+/// @param shortcut The requested accelerator, e.g. `Ctrl+Alt+O`.
+/// @returns The registered accelerator, or `Err` with every candidate's failure reason.
+#[tauri::command]
+fn set_overlay_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
+	let registered = settings::register_overlay_shortcut(&app, &shortcut)?;
+	let mut current = Settings::load(&app);
+	current.overlay_shortcut = registered.clone();
+	current.save(&app)?;
+	Ok(registered)
+}
+
 /// Builds and runs the application.
 ///
 /// Registers the plugins the shell needs and wires the global shortcut that toggles the
-/// overlay. The shortcut defaults to `Ctrl+Alt+B` because it is unlikely to collide with
-/// a StarCraft II hotkey; it is stored here rather than in config so the eventual settings
-/// UI has one obvious place to change it.
+/// overlay. The shortcut is loaded from the user's settings file, with the default and the
+/// fallback list living in `settings.rs` — it is a user-visible setting (the settings page
+/// exposes it) rather than a constant, because the right key depends on what else the
+/// player's desktop already binds.
 pub fn run() {
 	tauri::Builder::default()
 		.plugin(tauri_plugin_http::init())
 		.plugin(tauri_plugin_shell::init())
 		// Reveals the main window once the frontend has painted (see `reveal_main_window`).
-		.invoke_handler(tauri::generate_handler![frontend_ready, toggle_overlay])
+		.invoke_handler(tauri::generate_handler![
+			frontend_ready,
+			toggle_overlay,
+			get_settings,
+			set_overlay_shortcut
+		])
 		// The shortcut is registered from inside `setup` rather than by the builder so a
 		// failure is recoverable. On Wayland registration is expected to fail — the plugin
 		// is X11-only — and an error returned from `setup` would take the whole app down
 		// with it, leaving the player with no window to toggle the overlay from either.
 		.setup(|app| {
-			use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
-			let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyB);
-			if let Err(err) = app.global_shortcut().register(toggle) {
-				eprintln!(
-					"global shortcut unavailable ({err}); \
+			// Register from the stored setting, not a constant, so a rebind survives a
+			// restart. `register_overlay_shortcut` walks a fallback list when the stored key
+			// is taken, so a fresh install still gets a working toggle key.
+			let loaded = Settings::load(app.handle());
+			match settings::register_overlay_shortcut(app.handle(), &loaded.overlay_shortcut) {
+				Ok(registered) => {
+					if registered != loaded.overlay_shortcut {
+						eprintln!(
+							"overlay shortcut {} was unavailable; registered {registered} instead",
+							loaded.overlay_shortcut
+						);
+					}
+					// Persist the substitution so the settings page shows the key that actually
+					// works rather than the one that failed to register.
+					if registered != loaded.overlay_shortcut {
+						let mut updated = loaded.clone();
+						updated.overlay_shortcut = registered;
+						if let Err(err) = updated.save(app.handle()) {
+							eprintln!("could not persist the fallback shortcut ({err})");
+						}
+					}
+				}
+				Err(err) => eprintln!(
+					"no global shortcut could be registered ({err}); \
 					 the overlay can still be toggled from the app window. \
 					 Wayland needs the XDG GlobalShortcuts portal — see docs/adr/0003"
-				);
+				),
 			}
 			arm_main_window_watchdog(app.handle().clone());
 			Ok(())

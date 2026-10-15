@@ -5,10 +5,12 @@
  * frontend never parses a replay (ADR 0001): the sidecar hands over prepared series and
  * summaries shaped like this, and the UI only formats them.
  *
- * Time units are explicit in every name on purpose. The replay clock is game time
- * (`frames / 16`); wall-clock seconds at the ladder-default `Faster` speed are game
- * seconds x 1.4. Mixing the two silently produces timings that are 40% wrong, so a bare
- * `seconds` field would be a bug waiting to happen — see AGENTS.md.
+ * Time units are explicit in every name on purpose. The replay clock IS the game clock:
+ * from Legacy of the Void onward the SC2 game clock runs 1:1 with real time at `Faster`,
+ * so `frames / 16` is both the in-game seconds and the wall-clock seconds of a game with no
+ * pauses. The pre-LotV "Blizzard time" offset is gone, and the two must not be conflated
+ * anyway — a game clock stops while the game is paused, so it is *not* elapsed real time.
+ * See AGENTS.md.
  */
 
 /** The three playable races, as they appear in a replay header. */
@@ -125,8 +127,9 @@ export interface LiveGameState {
 	isReplay: boolean;
 	/**
 	 * The UI clock, in seconds. This is the value a build-order timer counts against,
-	 * because the game itself freezes it while paused.
+	 * because the game itself freezes it while paused. `null` when the response carried no
+	 * numeric clock — which is not the same as `0`, a legitimate reading at game start.
 	 */
-	displayTime: number;
+	displayTime: number | null;
 	players: { name: string; type: string; race: Race; result: string }[];
 }

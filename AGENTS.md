@@ -55,12 +55,45 @@
   failure mode that matters is "the field name is different in this build".
 - The test suite must run with **no network**.
 
+## The game clock (do not get this wrong again)
+
+This was initially recorded backwards and cost real effort to undo, so it is stated plainly:
+
+- **The SC2 game clock is 1:1 with real time.** Legacy of the Void removed the Wings of
+  Liberty / Heart of the Swarm "Blizzard time" offset. At `Faster` there is no multiplier.
+  A value on the game clock equals the same number of real seconds of unpaused play.
+- **`frames / 16` is that clock.** It is the only correct way to turn a replay's frames into
+  seconds.
+- **`sc2reader`'s `replay.length` / `real_length` are wrong for LotV.** `resources.py` divides
+  by `16 * 1.4` for every build >= 34784 regardless of expansion, while the LotV `Faster`
+  factor in `constants.py` is `1.0`. The numbers are small in absolute terms but they are
+  systematically ~1.4x low, which is exactly the kind of error that looks plausible.
+- **Never add a speed multiplier.** `gameToRealSeconds` was removed rather than fixed: a
+  helper that accepts a multiplier implies the multiplier is sometimes not 1, which is how
+  the wrong factor spread through the docs in the first place. If a real-time figure is
+  needed, it equals the game-clock figure.
+- **The clock stops during a pause.** Game seconds are therefore not elapsed real time. Where
+  that distinction matters ("how long since the last worker"), say which one is meant.
+
+Evidence on this machine: the live client API's `displayTime` advanced 309 s over 304 s of
+wall clock; replay `Duration` matched `frames / 16` within 1% across 722 replays.
+
 ## Hard rules learned the hard way
 
-- **The replay clock is in game seconds.** `frames / 16` = in-game seconds; real seconds
-  at `Faster` (the ladder default) = in-game seconds × 1.4 (measured across 722 replays).
-  Never mix the two. Anything time-related that ignores this produces timings that are
-  40% wrong.
+- **The game clock runs 1:1 with real time.** From Legacy of the Void onward there is no
+  "Blizzard time" offset: at `Faster` (the ladder and custom-game default) the SC2 clock
+  advances at the same rate as wall clock, so a game clock value is also a real-time value.
+  The pre-LotV 1.4 factor does **not** apply. Verified two ways: the live client API's
+  `displayTime` advanced 309 s over 304 s of wall clock, and replay `Duration` matches
+  `frames / 16` within 1% on 722 replays.
+- **`sc2reader`'s `replay.length` is in *game* seconds and is a display string, not a
+  duration.** `resources.py` computes it as `frames / (16 * 1.4)` for any build >= 34784
+  (i.e. all LotV replays) even though `GAME_SPEED_FACTOR["LotV"]["Faster"]` is 1.0, so the
+  prefix "real" in `real_length` is a misnomer. Use `frames / 16`. Do not use `replay.length`
+  as a timeline length: it under-reports LotV games by ~1.4x.
+- **A game clock stops while the game is paused**, so it is not elapsed real time. Anything
+  that needs elapsed wall time (e.g. "time since you last made a worker") must say so
+  explicitly rather than assuming the two are interchangeable.
 - **`PlayerStatsEvent` is sampled every 10 game seconds.** Never claim sub-10-second
   precision for a stat derived from it; use per-unit tracker events when you need more.
 - **`UnitDiedEvent.unit_type_name` is `None`.** Join deaths to births on `unit_id` to
@@ -72,7 +105,8 @@
   replay.** (MMR, `Duration`, map, per-player results live there.) Read it through the
   archive; `Path(...).with_suffix(".SC2Replay.gamemetadata.json")` silently finds nothing.
   Also: one replay in the library carries `MMR: -36400` (an arcade map), so validate before
-  using — and note `Duration` is **real-time** seconds, not the in-game clock.
+  using. `Duration` is in **seconds**, 1:1 with real time, and matches `frames / 16` within
+  1% — so it is safe to use, unlike `sc2reader`'s `replay.length`.
 - **The overlay window is created only by `toggle_overlay` in `src-tauri/src/lib.rs`.**
   Never build it from the frontend with `new WebviewWindow('overlay', …)`. The flags that
   make it usable — borderless, always-on-top, click-through, `skip_taskbar` — are applied

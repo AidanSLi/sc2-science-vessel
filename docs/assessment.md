@@ -96,16 +96,25 @@ This single event type carries most of the feature list:
    a free cross-check against any upload-based service.
    One value is garbage — `-36400` in `Winter Madness LE (3).SC2Replay`, an arcade map —
    so treat a nonsensical MMR as "no MMR" rather than plotting it.
-3. **`Duration` in `gamemetadata.json` is real-time seconds, not in-game seconds** —
-   measured on all 722 replays: 641 of 722 match `frames / 16` to within 1%, and
-   `Duration / in-game clock` is exactly 1.40× on 531, 1.41× on 95, 1.42× on 21. Do not
-   compare it against the in-game clock. So **real wall-clock seconds = game seconds ×
-   1.4**, and Liquipedia's table confirms Faster = speed factor 1.4 / "42.86 real-time
-   seconds per normal minute".
+3. **`Duration` in `gamemetadata.json` is in seconds, and matches `frames / 16`** —
+   measured on all 722 replays: 641 of 722 match to within 1%. It is not a separate clock
+   and needs no conversion.
 
-   *Correction to earlier thinking in this session:* an observed ~6× ratio in one AI
-   game was an artifact of that game's pacing, not a property of Faster. The 1.4 factor
-   is the one that holds across your library.
+   *Correction.* An earlier version of this document claimed `Duration` was "real-time
+   seconds, 1.40x the in-game clock", based on the ratio `Duration / replay.length` being
+   1.40x on 531 replays. That ratio is real, but it measures **`replay.length`, not the
+   game clock**: `sc2reader`'s `resources.py` divides LotV frames by `16 * 1.4` for every
+   build >= 34784 even though its own `GAME_SPEED_FACTOR["LotV"]["Faster"]` is `1.0`. So
+   `replay.length` is ~1.4x too low, and comparing `Duration` against it manufactured a
+   1.4 factor that does not exist. The same wrong inference had been applied to the live
+   client API's `displayTime`; sampling that endpoint directly shows it advancing 309 s
+   over 304 s of wall clock, i.e. 1:1.
+
+   **The SC2 game clock has run 1:1 with real time since Legacy of the Void.** At `Faster`
+   there is no multiplier. `frames / 16` is the clock, `Duration` agrees with it, and
+   `displayTime` agrees with it. Liquipedia's 1.4 "speed factor" table describes the
+   WoL/HotS behaviour and the ratio between game speed settings, not a conversion to apply
+   to LotV timings.
 
 ### 2.4 What is genuinely hard, and why the clock is the crux
 
@@ -401,12 +410,14 @@ wayland-info | grep -E "layer_shell|wl_compositor|xdg_wm_base"
 | --- | --- |
 | 722/722 replays parse; 3 ms each | verified here |
 | `PlayerStatsEvent` field list and 10 s cadence | verified from installed `sc2reader 1.9.0` |
-| `Duration` = game seconds × 1.4 | verified on 722 replays (531 exact, 95 at 1.41) |
+| `Duration` matches `frames / 16` within 1% | verified on 722 replays (641 exact) |
+| Game clock runs 1:1 with real time at `Faster` (no LotV multiplier) | verified here — `displayTime` advanced 309 s over 304 s of wall clock; `sc2reader`'s LotV factor is `1.0` |
 | MMR present in 236/722 replays | verified here |
 | kwin advertises `zwlr_layer_shell_v1` v5 | verified here via `wayland-info` |
-| `localhost:6119/game` → `displayTime`, clock only | quote from Blizzard's 2016 developer post (external research A5) |
+| `localhost:6119/game` → `displayTime`, clock only | verified against a **live game** here: `{"isReplay":false,"displayTime":…,"players":[…]}` |
+| `localhost:6119/game` reports race as a 4-letter code (`Prot`) | verified against a live game here — full names are *not* sent |
 | Trackers written incrementally in a live game | **UNVERIFIED** — no source found |
-| Client "real-time mode" making game time 1:1 with wall clock | **UNVERIFIED, likely false** — the only sourced `realtime` flag is the developer API's, and it means "run at Faster, not stepped by a bot" |
+| Client "real-time mode" making game time 1:1 with wall clock | verified — this is simply how the clock works from LotV onward |
 | spawningtool.com JSON API | **not found** — `?format=json` returns HTML |
 | SALT encoder exists | **false** — `reardan/salt` is decoder-only |
 | PPA definition | **UNVERIFIED** — not on any publicly fetchable page |

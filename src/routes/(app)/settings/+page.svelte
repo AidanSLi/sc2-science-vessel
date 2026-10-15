@@ -8,9 +8,24 @@
 	 */
 	import { onDestroy } from 'svelte';
 	import { CLIENT_API_PORT, isTauri, pollClientApi, type LiveState } from '#lib/client-api';
+	import {
+		acceleratorFromEvent,
+		DEFAULT_OVERLAY_SHORTCUT,
+		loadSettings,
+		normaliseAccelerator,
+		saveOverlayShortcut
+	} from '#lib/settings';
 
 	let live = $state<LiveState>({ status: 'idle', game: null, lastOkAt: null, detail: null });
 	let busy = $state(false);
+
+	/** The overlay toggle key as registered by the shell, not as requested. */
+	let overlayShortcut = $state(DEFAULT_OVERLAY_SHORTCUT);
+	/** True while the key recorder is listening for a press. */
+	let recording = $state(false);
+	/** Message about the last rebind attempt: success, substitution, or failure. */
+	let shortcutMessage = $state<string | null>(null);
+	let shortcutError = $state(false);
 
 	const timer = setInterval(async () => {
 		if (busy) return;
@@ -19,6 +34,8 @@
 
 	void (async () => {
 		live = await pollClientApi();
+		const settings = await loadSettings();
+		overlayShortcut = settings.overlayShortcut;
 	})();
 
 	onDestroy(() => clearInterval(timer));
@@ -30,9 +47,60 @@
 		busy = false;
 	}
 
-	/** The overlay toggle key, matching the Rust shell's binding. */
-	const shortcut = 'Ctrl+Alt+B';
+	/**
+	 * Applies a keypress captured by the recorder.
+	 *
+	 * A chord that yields no accelerator (a bare modifier, Escape, or punctuation the parser
+	 * would not round-trip) is refused with an explanation instead of being sent to the shell
+	 * to fail there. The shell's answer is the registered key, which may differ from the one
+	 * requested when the combination is already owned by another application; that
+	 * substitution is surfaced because a player whose key quietly did not take effect would
+	 * press it mid-game and see nothing happen.
+	 *
+	 * @param event The keydown captured by the recorder.
+	 */
+	async function recordShortcut(event: KeyboardEvent) {
+		event.preventDefault();
+		if (event.key === 'Escape') {
+			recording = false;
+			shortcutMessage = null;
+			return;
+		}
+		const accelerator = acceleratorFromEvent(event);
+		if (!accelerator) {
+			shortcutMessage = 'Use a modifier with a letter, digit or function key (e.g. Ctrl+Alt+O).';
+			shortcutError = true;
+			return;
+		}
+		recording = false;
+		shortcutMessage = 'Registering…';
+		shortcutError = false;
+		try {
+			const result = await saveOverlayShortcut(accelerator);
+			overlayShortcut = result.shortcut;
+			shortcutMessage = result.substituted
+				? `${accelerator} is taken by another application, so ${result.shortcut} was registered instead.`
+				: `${result.shortcut} is now the overlay toggle.`;
+			shortcutError = result.substituted;
+		} catch (err) {
+			shortcutMessage = `Could not register a shortcut: ${
+				err instanceof Error ? err.message : String(err)
+			}`;
+			shortcutError = true;
+		}
+	}
+
+	/** Formats the stored accelerator for display in a fixed modifier order. */
+	const shortcutDisplay = $derived(normaliseAccelerator(overlayShortcut));
 </script>
+
+<svelte:window
+	onkeydown={recording
+		? (event) => {
+				void recordShortcut(event);
+			}
+		: undefined}
+/>
 
 <section class="space-y-8">
 	<h1 class="text-xl font-semibold">Settings</h1>
@@ -54,7 +122,7 @@
 			</dd>
 			<dt class="text-ink-500">Game clock</dt>
 			<dd>
-				{live.game ? `${live.game.displayTime.toFixed(1)}s` : '—'}
+				{live.game?.displayTime != null ? `${live.game.displayTime.toFixed(1)}s` : '—'}
 			</dd>
 			<dt class="text-ink-500">In a replay</dt>
 			<dd>{live.game ? (live.game.isReplay ? 'yes' : 'no') : '—'}</dd>
@@ -91,9 +159,31 @@
 
 	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
 		<h2 class="text-sm font-semibold">Overlay</h2>
+		<p class="mt-2 max-w-2xl text-sm text-ink-300">
+			The toggle key works anywhere, including over the game, so it is worth choosing
+			something you will not hit by accident.
+		</p>
 		<dl class="tabular mt-3 grid gap-2 text-sm sm:grid-cols-[10rem_1fr]">
-			<dt class="text-ink-500">Toggle</dt>
-			<dd>{shortcut}</dd>
+			<dt class="text-ink-500">Toggle key</dt>
+			<dd class="flex flex-wrap items-center gap-2">
+				<kbd class="rounded border border-surface-700 bg-surface-950 px-2 py-0.5 font-mono text-xs">
+					{shortcutDisplay}
+				</kbd>
+				{#if isTauri()}
+					<button
+						type="button"
+						class="rounded border px-2 py-0.5 text-xs {recording
+							? 'border-amber-600 bg-amber-950/40 text-amber-300'
+							: 'border-surface-700 bg-surface-800 text-ink-300 hover:bg-surface-700'}"
+						onclick={() => {
+							recording = true;
+							shortcutMessage = null;
+						}}
+					>
+						{recording ? 'Press a key… (Esc to cancel)' : 'Change'}
+					</button>
+				{/if}
+			</dd>
 			<dt class="text-ink-500">Behaviour</dt>
 			<dd>Always on top, click-through, follows the game clock.</dd>
 			<dt class="text-ink-500">Wayland note</dt>
@@ -103,6 +193,11 @@
 				planned (ADR 0003).
 			</dd>
 		</dl>
+		{#if shortcutMessage}
+			<p class="mt-3 text-xs {shortcutError ? 'text-amber-400' : 'text-ink-400'}">
+				{shortcutMessage}
+			</p>
+		{/if}
 	</div>
 
 	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">

@@ -68,7 +68,11 @@
 	})();
 
 	/** The clock the guide counts against: the game's own, or the manual fallback. */
-	const clock = $derived(usingManual || !live.game ? manualClock : live.game.displayTime);
+	// `displayTime` is null when the client answered without a clock; treat that the same as
+	// no game, so the overlay shows its manual controls instead of counting from nothing.
+	const clock = $derived(
+		usingManual || !live.game || live.game.displayTime === null ? manualClock : live.game.displayTime
+	);
 
 	/** How far through the build that clock is. */
 	const progress = $derived(advance(build.steps, clock));
@@ -98,7 +102,9 @@
 
 	/** The status line, preferring the transport's own message when there is one. */
 	const statusText = $derived(
-		live.detail ?? statusLabels[live.status] + (live.game ? ` (${live.game.displayTime.toFixed(0)}s)` : '')
+		live.detail ??
+		statusLabels[live.status] +
+			(live.game?.displayTime != null ? ` (${live.game.displayTime.toFixed(0)}s)` : '')
 	);
 
 	/** In a browser tab, loopback is unreadable, so say that instead of blaming the game. */

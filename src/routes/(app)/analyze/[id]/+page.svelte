@@ -4,7 +4,7 @@
 	 * and states plainly what is not wired up yet, so the empty panels are not mistaken
 	 * for missing data.
 	 */
-	import { formatGameTime, gameToRealSeconds } from '#lib/clock';
+	import { formatGameTime } from '#lib/clock';
 	import type { MetricGroup } from '#lib/types';
 
 	/** The group tabs, with what each will eventually plot. */
@@ -32,9 +32,8 @@
 	<div>
 		<h1 class="text-xl font-semibold">{placeholder.map}</h1>
 		<p class="tabular mt-1 text-sm text-ink-500">
-			{placeholder.matchup} · {formatGameTime(placeholder.lengthInGameSeconds)} game time
-			({Math.round(gameToRealSeconds(placeholder.lengthInGameSeconds) / 60)} min wall clock at
-			Faster) · patch {placeholder.version}
+			{placeholder.matchup} · {formatGameTime(placeholder.lengthInGameSeconds)} game time ·
+			patch {placeholder.version}
 		</p>
 	</div>
 
