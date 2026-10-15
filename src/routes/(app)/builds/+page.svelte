@@ -18,22 +18,25 @@
 	/**
 	 * Opens the build-order overlay window through the Rust command.
 	 *
-	 * Failure is expected in a browser tab (there is no desktop shell there), so the
-	 * message distinguishes "no desktop shell" from a real error.
+	 * This deliberately delegates to `toggle_overlay` rather than constructing a
+	 * `WebviewWindow` here. The overlay's whole behaviour is in how the window is
+	 * *configured* — borderless, always-on-top, click-through, out of the taskbar — and the
+	 * Rust side re-applies those flags on every show, partly because they do not reliably
+	 * survive a hide/show cycle. A window built from the frontend with
+	 * `new WebviewWindow('overlay', …)` looks right for a moment and then behaves like an
+	 * ordinary window, which the player would only find out mid-game when the overlay started
+	 * eating their mouse clicks. One construction path also means one place to change when
+	 * the overlay becomes a native layer-shell surface (ADR 0003).
+	 *
+	 * Failure is expected in a browser tab (there is no desktop shell there), so the message
+	 * distinguishes "no desktop shell" from a real error.
 	 */
 	async function openOverlay() {
 		overlayMessage = null;
 		try {
-			const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-			let win = await WebviewWindow.getByLabel('overlay');
-			if (!win) {
-				win = new WebviewWindow('overlay', { url: '/overlay' });
-			}
-			await win.show();
-			await win.setAlwaysOnTop(true);
-			await win.setIgnoreCursorEvents(true);
-			overlayMessage = 'Overlay shown. Ctrl+Alt+B toggles it.',
-				overlayMessage;
+			const { invoke } = await import('@tauri-apps/api/core');
+			await invoke('toggle_overlay');
+			overlayMessage = 'Overlay shown. Ctrl+Alt+B toggles it.';
 		} catch (err) {
 			overlayMessage = `Needs the desktop app: ${
 				err instanceof Error ? err.message : String(err)

@@ -21,6 +21,8 @@ use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 /// Label of the always-on-top build-order overlay window, as declared in `tauri.conf.json`.
 pub const OVERLAY_WINDOW_LABEL: &str = "overlay";
 
+/// Command the frontend calls to show or hide the overlay window.
+///
 /// Hides the overlay if it is visible, shows it if it is hidden, and returns the new state.
 ///
 /// Toggling a window is not a single Tauri call: a window can be *closed* rather than
@@ -28,9 +30,15 @@ pub const OVERLAY_WINDOW_LABEL: &str = "overlay";
 /// always-on-top flags on every show, because those flags are lost when a window is
 /// recreated and on some platforms when it is re-shown.
 ///
+/// Exposed as a command so the frontend has exactly **one** way to bring the overlay up. It
+/// must not build a `WebviewWindow` itself: the flags that make the overlay usable are
+/// applied here, and a window created from the frontend would look right and then behave
+/// like an ordinary window (see `apply_overlay_flags`).
+///
 /// @param app The running app handle.
 /// @returns `true` if the overlay is now visible.
-pub fn toggle_overlay(app: &tauri::AppHandle) -> tauri::Result<bool> {
+#[tauri::command]
+fn toggle_overlay(app: tauri::AppHandle) -> tauri::Result<bool> {
 	if let Some(window) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
 		if window.is_visible().unwrap_or(false) {
 			window.hide()?;
@@ -42,7 +50,7 @@ pub fn toggle_overlay(app: &tauri::AppHandle) -> tauri::Result<bool> {
 		return Ok(true);
 	}
 
-	let window = create_overlay_window(app)?;
+	let window = create_overlay_window(&app)?;
 	apply_overlay_flags(&window)?;
 	window.show()?;
 	Ok(true)
@@ -109,7 +117,7 @@ pub fn run() {
 		.plugin(tauri_plugin_http::init())
 		.plugin(tauri_plugin_shell::init())
 		// Reveals the main window once the frontend has painted (see `reveal_main_window`).
-		.invoke_handler(tauri::generate_handler![frontend_ready])
+		.invoke_handler(tauri::generate_handler![frontend_ready, toggle_overlay])
 		// The shortcut is registered from inside `setup` rather than by the builder so a
 		// failure is recoverable. On Wayland registration is expected to fail — the plugin
 		// is X11-only — and an error returned from `setup` would take the whole app down
@@ -133,7 +141,7 @@ pub fn run() {
 					// Act on press only: a handler that also fired on release would toggle
 					// the overlay twice per keystroke and net out to no visible change.
 					if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-						let _ = toggle_overlay(app);
+						let _ = toggle_overlay(app.clone());
 					}
 				})
 				.build(),

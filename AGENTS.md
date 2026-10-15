@@ -73,6 +73,14 @@
   archive; `Path(...).with_suffix(".SC2Replay.gamemetadata.json")` silently finds nothing.
   Also: one replay in the library carries `MMR: -36400` (an arcade map), so validate before
   using — and note `Duration` is **real-time** seconds, not the in-game clock.
+- **The overlay window is created only by `toggle_overlay` in `src-tauri/src/lib.rs`.**
+  Never build it from the frontend with `new WebviewWindow('overlay', …)`. The flags that
+  make it usable — borderless, always-on-top, click-through, `skip_taskbar` — are applied
+  in Rust on every show, because they do not reliably survive a hide/show cycle. A window
+  created from the frontend looks right and then silently becomes clickable, which the
+  player discovers mid-game. `toggle_overlay` is exposed as a Tauri command for exactly
+  this reason, and it must not be `pub` (the `#[tauri::command]` macro generates a
+  same-named import, and a `pub fn` collides with it: E0255).
 - **Never read the game process's memory and never write to the game.** The only
   sanctioned live input is the SC2 Client API on `localhost:6119`. This keeps the app on
   the benign side of Blizzard's discretionary EULA clause.
