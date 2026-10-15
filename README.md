@@ -58,6 +58,20 @@ Under X11 the window opens but nothing is presented, while stderr repeats
 saying so. `WEBKIT_DISABLE_DMABUF_RENDERER=0` restores it deliberately if your drivers
 handle it. See `docs/adr/0005-disable-webkitgtk-dmabuf-renderer.md`.
 
+### If the window looks blank
+
+The main window is created hidden and is shown by the first page that paints, so it should
+never appear empty. If it does:
+
+- **A first run on a cold cache is slower**, because Vite logs `Forced re-optimization of
+dependencies` and takes several seconds to serve anything. The window simply does not appear
+until it is ready, rather than appearing blank.
+- **If no window appears at all**, the frontend never signalled readiness and the 10-second
+watchdog has not fired yet. Give it a moment, then check the dev server's output for
+`200 GET /`.
+- **A leftover `vite` holding port 1420** makes the run fail at start-up
+  (`Error: Port 1420 is already in use`). Check with `ss -ltnp | grep :1420`.
+
 ## Layout
 
 ```

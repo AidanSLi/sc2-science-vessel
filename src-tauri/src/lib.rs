@@ -48,6 +48,56 @@ pub fn toggle_overlay(app: &tauri::AppHandle) -> tauri::Result<bool> {
 	Ok(true)
 }
 
+/// Label of the main window declared in `tauri.conf.json`.
+pub const MAIN_WINDOW_LABEL: &str = "main";
+
+/// How long to wait for the frontend's ready signal before showing the window anyway.
+///
+/// Generous on purpose: a first run on a cold cache spends several seconds in Vite's
+/// `Forced re-optimization of dependencies`, and a window that never appears is worse than
+/// one that appears a moment late.
+const MAIN_WINDOW_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Shows the main window. Idempotent, and safe to call from any thread.
+///
+/// @param app The running app handle.
+fn show_main_window(app: &tauri::AppHandle) {
+	if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+		// `is_visible` can error transiently on a window being torn down; showing it again
+		// is harmless, so a failure here is not worth propagating.
+		if !window.is_visible().unwrap_or(false) {
+			let _ = window.show();
+		}
+	}
+}
+
+/// Shows the main window if the frontend has not done so within [`MAIN_WINDOW_WATCHDOG`].
+///
+/// The main window is declared `visible: false` so it cannot be seen before the frontend has
+/// painted. Without this timer the app would have a single point of failure: if the frontend
+/// never loads (a wrong `devUrl`, a failed asset load, a JavaScript error before first paint)
+/// nothing would ever show the window, and the app would look like it had not started at all.
+/// The timer bounds that to "a slow start" instead of "nothing happens".
+///
+/// @param app The running app handle.
+fn arm_main_window_watchdog(app: tauri::AppHandle) {
+	std::thread::spawn(move || {
+		std::thread::sleep(MAIN_WINDOW_WATCHDOG);
+		show_main_window(&app);
+	});
+}
+
+/// Command the frontend calls once it has painted, to reveal the main window.
+///
+/// Deliberately not an event listener: the frontend's first paint is the signal, so the
+/// command is invoked from the root layout's `onMount`, and a command is the smallest
+/// thing that can cross the IPC boundary from a page that has no Rust-side state to read.
+/// It is also idempotent — the watchdog may have already shown the window.
+#[tauri::command]
+fn frontend_ready(app: tauri::AppHandle) {
+	show_main_window(&app);
+}
+
 /// Builds and runs the application.
 ///
 /// Registers the plugins the shell needs and wires the global shortcut that toggles the
@@ -58,6 +108,8 @@ pub fn run() {
 	tauri::Builder::default()
 		.plugin(tauri_plugin_http::init())
 		.plugin(tauri_plugin_shell::init())
+		// Reveals the main window once the frontend has painted (see `reveal_main_window`).
+		.invoke_handler(tauri::generate_handler![frontend_ready])
 		// The shortcut is registered from inside `setup` rather than by the builder so a
 		// failure is recoverable. On Wayland registration is expected to fail — the plugin
 		// is X11-only — and an error returned from `setup` would take the whole app down
@@ -72,6 +124,7 @@ pub fn run() {
 					 Wayland needs the XDG GlobalShortcuts portal — see docs/adr/0003"
 				);
 			}
+			arm_main_window_watchdog(app.handle().clone());
 			Ok(())
 		})
 		.plugin(

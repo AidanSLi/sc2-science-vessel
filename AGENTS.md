@@ -22,6 +22,14 @@
 
 ## Linux runtime notes
 
+- **The main window starts hidden and is shown by the frontend, with a watchdog behind it.**
+  `setup` arms a 10s thread and the root layout invokes `frontend_ready` from `onMount`; both
+  call `show_main_window`, which is idempotent. The failure mode is "the window is late",
+  never "the window never appears" — keep it that way. Do not reorder the watchdog to run
+  *after* awaiting the frontend signal, and do not replace `isTauri()` with a
+  `window.__TAURI__` check: that global is only injected when `withGlobalTauri` is enabled,
+  and this app does not enable it. See `docs/adr/0006-reveal-the-window-on-frontend-paint.md`.
+
 - **WebKitGTK's DMABUF renderer is broken on some Mesa/driver combinations, and the failure
   is silent.** Observed two ways on the reference machine (KDE 6.7 Wayland, webkit2gtk
   2.54.1, NVIDIA RTX 4070 + AMD iGPU): the process dies with `Error 71 (Protocol error)
