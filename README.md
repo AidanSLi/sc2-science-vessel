@@ -29,31 +29,34 @@ machine and StarCraft II is not installed there.
 
 ## Running it
 
-Prerequisites: Node 22+, Rust 1.77+ with the Tauri 2 system dependencies (on Arch:
+Prerequisites: Node 22+, pnpm 12+, Rust 1.77+ with the Tauri 2 system dependencies (on Arch:
 `webkit2gtk-4.1`, `gtk3`), and — for Python work — `uv`.
 
 ```sh
-npm install
-npm run check      # svelte-check, zero warnings is the bar
-npm run build      # static SPA into build/
-npm run tauri dev  # the desktop app
+pnpm install
+pnpm check         # svelte-check, zero warnings is the bar
+pnpm build         # static SPA into build/
+pnpm tauri dev     # the desktop app
 ```
+
+The global shortcut is X11-only (Tauri issue 3578); on Wayland open the overlay from the
+Builds page instead. This does not change the overlay window's behaviour.
 
 ### Linux desktop notes
 
-The WebKitGTK DMABUF renderer is broken against some Mesa/driver combinations. Both
-failure modes were seen on the reference machine (a KDE 6.7 Wayland session, Mesa 25.x):
-a hard `Error 71 (Protocol error) dispatching to Wayland display`, and a window that opens
-with a blank webview and `Failed to create GBM buffer of size 1280x820: Invalid argument`
-repeated on stderr. Either way the app looks dead and nothing is logged that points at the
-cause:
+The WebKitGTK DMABUF renderer fails on some Mesa/driver combinations, two ways, neither with a
+useful error. Under Wayland the process dies outright:
 
-```sh
-WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri dev
+```
+Gdk-Message: Error 71 (Protocol error) dispatching to Wayland display.
 ```
 
-This does not affect the overlay window's behaviour. The global shortcut is X11-only
-(Tauri issue 3578); on Wayland the overlay is opened from the Builds page.
+Under X11 the window opens but nothing is presented, while stderr repeats
+`Failed to create GBM buffer of size 1280x820: Invalid argument`.
+
+**Nothing to do** — the app disables the DMABUF path itself at start-up and logs one line
+saying so. `WEBKIT_DISABLE_DMABUF_RENDERER=0` restores it deliberately if your drivers
+handle it. See `docs/adr/0005-disable-webkitgtk-dmabuf-renderer.md`.
 
 ## Layout
 

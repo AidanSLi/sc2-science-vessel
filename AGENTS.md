@@ -22,17 +22,23 @@
 
 ## Linux runtime notes
 
-- **WebKitGTK's DMABUF renderer is broken on some Mesa/driver combinations.** On the
-  reference machine (KDE 6.7 Wayland, webkit2gtk 2.54.1) `npm run tauri dev` fails two
-  different ways without the flag: `Error 71 (Protocol error) dispatching to Wayland
-  display` kills the process outright, and the X11 backend instead opens a window with a
-  blank webview while logging `Failed to create GBM buffer of size 1280x820: Invalid
-  argument` on every frame. Always test with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Do not
-  chase this as an application bug — it reproduces with an unmodified Tauri scaffold.
-- **Global shortcuts are X11-only** (Tauri issue 3578). Registering on Wayland is expected
-  to fail, which is why `setup` logs the error and continues instead of returning it: an
-  error out of `setup` takes the whole app down, leaving the user no window to toggle the
-  overlay from.
+- **WebKitGTK's DMABUF renderer is broken on some Mesa/driver combinations, and the failure
+  is silent.** Observed two ways on the reference machine (KDE 6.7 Wayland, webkit2gtk
+  2.54.1, NVIDIA RTX 4070 + AMD iGPU): the process dies with `Error 71 (Protocol error)
+  dispatching to Wayland display`, or an X11 window opens blank while `Failed to create GBM
+  buffer of size 1280x820: Invalid argument` repeats on stderr. The app fixes this itself in
+  `src-tauri/src/main.rs` — do not add the env var to commands, and do not remove that block
+  without the evidence in `docs/adr/0005-disable-webkitgtk-dmabuf-renderer.md`.
+- **Process cleanup is a trap in three separate ways.** `pkill -x sc2-science-vessel` does
+  nothing, because Linux truncates `comm` to 15 characters (`sc2-science-ves`). A `pkill -f`
+  pattern also matches the invoking shell's own command line, so an inline cleanup command
+  kills the harness that is running it. And `ps | grep -c <pattern>` counts the `grep` itself,
+  so a "0 processes left" check always reads 1. Put cleanup in a script file, count by `comm`,
+  and match by port for anything serving 1420 — a stale Vite makes the next `tauri dev` fail
+  outright, while a stale window looks exactly like a fresh one.
+- **Global shortcuts are X11-only** (Tauri issue 3578). Registering on Wayland is expected to
+  fail, which is why `setup` logs the error and continues instead of returning it: an error
+  out of `setup` takes the whole app down, leaving no window to toggle the overlay from.
 
 ## Testing
 
