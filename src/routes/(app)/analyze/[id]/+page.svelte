@@ -120,26 +120,20 @@
 	);
 
 	/**
-	 * Spells out an energy timeline's headline, naming players when more than one shares it.
+	 * Spells out an energy timeline's headline.
 	 *
 	 * A mirror matchup merges one entry per player of the ability's race, so "across 8 bases"
-	 * silently sums two players' town halls. Saying "across both Zergs' bases" keeps the aggregate
-	 * honest until the per-player line below breaks it down.
+	 * silently sums two players' town halls. Naming the player count keeps the aggregate honest
+	 * and points at the per-player line below it, which breaks the number down.
 	 *
 	 * @param timeline The merged energy timeline.
-	 * @returns A headline naming the base count, and the players when there is more than one.
+	 * @returns A headline naming the base count, and the player count when more than one.
 	 */
 	function energyHeadline(timeline: EnergyTimeline): string {
 		const bases = `${timeline.bases || 1} base${timeline.bases === 1 ? '' : 's'}`;
-		const entries = timeline.perPlayer ?? [];
-		const races = new Set<string>();
-		for (const entry of entries) {
-			const race = playersByPid.get(entry.pid)?.race;
-			if (race) races.add(race);
-		}
-		const both = entries.length > 1 && races.size > 0;
-		const owner = both ? `both ${[...races].join(' and ')}s' ` : '';
-		return `${Math.round(timeline.missedSeconds)}s idle across ${owner}${bases}`;
+		const players = timeline.perPlayer?.length ?? 0;
+		const owners = players > 1 ? ` (${players} players` : '';
+		return `${Math.round(timeline.missedSeconds)}s idle across ${bases}${owners ? owners + ')' : ''}`;
 	}
 
 	/**
