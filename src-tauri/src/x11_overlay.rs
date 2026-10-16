@@ -113,7 +113,11 @@ fn game_title_rank(title: &str) -> Option<u8> {
 ///
 /// Used only to tell "some client went fullscreen" from "we did", since the app's own
 /// fullscreen state is not a reason to stop being an overlay.
-const OWN_WINDOW_TITLE_PREFIX: &str = "sc2-science-vessel";
+///
+/// Two prefixes, because the window title is `SC2 Science Vessel` in a built app (from
+/// `tauri.conf.json`'s `productName`) while a dev window's title may still be the crate name.
+/// Missing either would make the app mistake its own fullscreen window for the game's.
+const OWN_WINDOW_TITLE_PREFIXES: &[&str] = &["sc2 science vessel", "sc2-science-vessel"];
 
 /// Reports whether some client other than this application holds a fullscreen window.
 ///
@@ -172,7 +176,12 @@ fn another_client_is_fullscreen_with<C: Connection>(conn: &C, screen_num: usize)
         }
         // The app's own fullscreen would be a reason to keep being an overlay, not to stop.
         let own = window_title(conn, window)
-            .map(|title| title.to_ascii_lowercase().starts_with(OWN_WINDOW_TITLE_PREFIX))
+            .map(|title| {
+                let lower = title.to_ascii_lowercase();
+                OWN_WINDOW_TITLE_PREFIXES
+                    .iter()
+                    .any(|prefix| lower.starts_with(prefix))
+            })
             .unwrap_or(false);
         if own || !is_viewable(conn, window) {
             continue;
