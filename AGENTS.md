@@ -217,6 +217,18 @@ and there is no extra multiplier to apply.
   something else can refuse. Verify a window-size change by reading the real geometry back
   (`qdbus6 org.kde.KWin /KWin org.kde.KWin.getWindowInfo <uuid>`) — a `set_size` that returns
   `Ok` proves nothing about the size the window ended up with.
+- **A geometry request against an UNREALISED window is a race, not a guarantee.** GTK needs a
+  realised `GdkWindow` before `set_size`/`set_position`/click-through mean anything, and a
+  request issued before the window is first mapped is queued against a window that does not
+  exist yet, so it is silently lost. This was measured directly on start-up into overlay mode:
+  `inner_size()` read `1280x820` immediately after `set_size(380x300)` *and* after `show()`, and
+  only a `set_size` repeated **after** the show took effect (`380x300`). The observable symptom
+  was intermittent — 6 consecutive cold starts all came up at the analysis size, while a
+  hand-built test had shown the right size only because its window had already been shown once.
+  **Every** geometry request in `apply_window_mode` therefore comes after `show()`, in both
+  branches; this is the same underlying issue as the click-through/always-on-top ordering
+  (ADR 0007), and the rule is always "map first, then request". Confirm a sizing fix over
+  several cold starts — never from one run and never from the call returning `Ok`.
 - **A fullscreen client defeats `always_on_top`, so the overlay yields instead of pretending.**
   KWin's `Window::belongsToLayer()` tests `isActiveFullScreen()` **before** `keepAbove()`, so a
   *focused* fullscreen window sits on `ActiveLayer` — above anything a keep-above toplevel can

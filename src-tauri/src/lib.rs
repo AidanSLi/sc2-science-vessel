@@ -260,11 +260,19 @@ fn apply_window_mode(
             // The size is restored programmatically when the mode is left.
             window.set_resizable(false)?;
             window.set_skip_taskbar(true)?;
-            window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))?;
             if should_show {
                 window.show()?;
             }
-            // Anchoring and click-through come after `show` for the reason in the docstring.
+            // Every request below needs a realised `GdkWindow`, so they all come after
+            // `show` — and that includes the size. A pre-show `set_size` is a race, not a
+            // guarantee: GTK queues it against a window that does not exist yet and the
+            // request is lost whenever the window is not being mapped for the first time.
+            // Measured on start-up into overlay mode: the pre-show call left the window at
+            // its configured 1280x820 (`inner_size` read back 1280x820 after `show`), while
+            // the same call repeated after the show took effect immediately (380x300). This
+            // is the same class of bug as click-through and always-on-top, so the fix is the
+            // same: order the request after the mapping, not before it.
+            window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))?;
             reposition_for_overlay(&window, None);
             window.set_always_on_top(true)?;
             window.set_ignore_cursor_events(true)?;
@@ -298,14 +306,22 @@ fn apply_window_mode(
             window.set_shadow(true)?;
             window.set_resizable(true)?;
             window.set_skip_taskbar(false)?;
-            window.set_size(tauri::LogicalSize::new(ANALYSIS_WIDTH, ANALYSIS_HEIGHT))?;
-            // Only re-centre a window that the player is asking to see. Re-centring one they
-            // had deliberately placed would move it on every automatic scan of client state.
-            if should_show && visibility == Visibility::Shown {
-                window.center()?;
-            }
             if should_show {
                 window.show()?;
+            }
+            // Every geometry request below needs a realised `GdkWindow`, and a size request
+            // against an unrealised one is a race rather than a guarantee — see the overlay
+            // branch for the measurement. An automatic mode change leaves the window hidden;
+            // for a hidden window the constraints alone are what will apply when it is next
+            // shown, so skipping the resize and the re-centre there loses nothing.
+            if should_show {
+                window.set_size(tauri::LogicalSize::new(ANALYSIS_WIDTH, ANALYSIS_HEIGHT))?;
+                // Only re-centre a window that the player is asking to see. Re-centring one
+                // they had deliberately placed would move it on every automatic scan of
+                // client state.
+                if visibility == Visibility::Shown {
+                    window.center()?;
+                }
             }
             // Only steal focus when the player asked for the window. An automatic mode change
             // must never pull focus away from a running game.
