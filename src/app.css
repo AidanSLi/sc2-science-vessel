@@ -58,6 +58,21 @@ html.is-transparent-window body {
 	background-color: transparent;
 }
 
+/*
+ * Surfaces inside the guide follow the same opacity as its panel, so setting the panel to fully
+transparent really does leave only the text on screen. Without this the header rule, the row
+highlight and the error banner each paint their own opaque band, which on a transparent window
+reads as a stack of dark stripes over the game rather than as an overlay (measured on a live
+screenshot). `--guide-veil` is set from the component's `panelOpacity`.
+ */
+html.is-transparent-window .guide-veil {
+	background-color: color-mix(in oklab, var(--color-surface-800) var(--guide-veil), transparent);
+}
+
+html.is-transparent-window .guide-rule {
+	border-color: color-mix(in oklab, var(--color-surface-700) var(--guide-veil), transparent);
+}
+
 /* Long lists of build steps are compared column-wise, so digits must not jitter. */
 .tabular {
 	font-variant-numeric: tabular-nums;

@@ -247,7 +247,7 @@
 	class="flex h-full flex-col text-ink-100"
 	style="background-color: color-mix(in oklab, var(--color-surface-950) {panelOpacity}%, transparent)"
 >
-	<header class="flex items-center justify-between gap-2 border-b border-surface-800 px-3 py-2">
+	<header class="flex items-center justify-between gap-2 guide-rule border-b px-3 py-2">
 		<div class="min-w-0">
 			<h1 class="truncate text-sm font-semibold">{build.title}</h1>
 			<p class="tabular text-xs text-ink-500">
@@ -275,7 +275,7 @@
 	</header>
 
 	<p
-		class="border-b border-surface-800 px-3 py-1.5 text-[11px] {live.status === 'live'
+		class="guide-rule border-b px-3 py-1.5 text-[11px] {live.status === 'live'
 			? 'text-ahead'
 			: 'text-ink-500'}"
 		role="status"
@@ -283,7 +283,7 @@
 		{statusText}
 	</p>
 	{#if statusHint}
-		<p class="border-b border-surface-800 bg-surface-900/60 px-3 py-1.5 text-[11px] text-ink-500">
+		<p class="guide-rule guide-veil border-b px-3 py-1.5 text-[11px] text-ink-500">
 			{statusHint}
 		</p>
 	{/if}
@@ -294,8 +294,8 @@
 			{@const isPast = index <= progress.lastDueIndex}
 			{@const isMissed = progress.missedIndexes.includes(index)}
 			<li
-				class="tabular flex items-center gap-2 px-3 py-1.5 text-sm {isNext
-					? 'bg-surface-800 font-semibold text-ink-100'
+				class="tabular guide-veil flex items-center gap-2 px-3 py-1.5 text-sm {isNext
+					? 'font-semibold text-ink-100'
 					: isMissed
 						? 'text-behind'
 						: isPast
@@ -313,7 +313,7 @@
 		{/each}
 	</ol>
 
-	<footer class="border-t border-surface-800 px-3 py-2">
+	<footer class="guide-rule border-t px-3 py-2">
 		<p class="tabular text-xs text-ink-500">
 			Game clock {formatGameTime(clock)}
 			{#if progress.nextIndex >= 0}
