@@ -154,14 +154,50 @@ and there is no extra multiplier to apply.
   keyed by the **string** `"1"`/`"2"` rather than by int pid, and each step is
   `{frame, time, name, supply, is_worker, clock_position, is_chronoboosted}`. Ability and
   unit-loss entries have no `supply` key at all, so read it defensively.
-- **The overlay window is created only by `toggle_overlay` in `src-tauri/src/lib.rs`.**
-  Never build it from the frontend with `new WebviewWindow('overlay', …)`. The flags that
-  make it usable — borderless, always-on-top, click-through, `skip_taskbar` — are applied
-  in Rust on every show, because they do not reliably survive a hide/show cycle. A window
-  created from the frontend looks right and then silently becomes clickable, which the
-  player discovers mid-game. `toggle_overlay` is exposed as a Tauri command for exactly
-  this reason, and it must not be `pub` (the `#[tauri::command]` macro generates a
-  same-named import, and a `pub fn` collides with it: E0255).
+- **There is ONE window, and it has two *modes* — not two windows.** The user's rule: "There
+  is no separate 'app window' and 'overlay window'. It is all the app window." The mode is
+  either `analysis` (resizable, decorated, interactive — matches, builds, analysis, settings)
+  or `overlay` (borderless, transparent, click-through, pinned over the game). The window's
+  own view is swapped by `src/routes/+layout.svelte` rendering either `<BuildOrderGuide />` or
+  the route children. Never create a second window; a second one duplicates the route and the
+  flags and the two drift apart. `apply_window_mode` in `src-tauri/src/lib.rs` is the **only**
+  thing that may set decorations, click-through, always-on-top, `skip_taskbar` or the size,
+  because those flags do not reliably survive a hide/show cycle: a click-through overlay that
+  has quietly become clickable is discovered mid-game, which is the worst time.
+- **Mode and visibility are independent, and conflating them is a bug.** `apply_window_mode`
+  takes a `Visibility` (`Shown` for the hotkey, `AsIs` for an automatic change). Without this,
+  hiding the app mid-game and then finishing the game pops the window back up uninvited over a
+  player who asked for it to be gone. Re-centring and `set_focus` are likewise confined to
+  `Visibility::Shown`: an automatic scan of client state must never move the window the player
+  placed or pull focus out of a running game. The rule is `should_reveal()`, with tests.
+- **Mode changes come from the client's screen list, never from the game clock.** The clock
+  freezes both while paused *and* when the game ends, so it cannot tell the two apart — an
+  earlier version used a five-second stall threshold and would throw a player out of the build
+  guide on a pause. Read `/ui` (see the next rule).
+- **`/ui`'s `activeScreens` is the game-state signal — an EMPTY list is the in-game reading.**
+  It was dismissed early on because one probe during a game returned `{"activeScreens":[]}` and
+  that was read as "no information". Empty *means* "no UI screen is open", i.e. a game is being
+  played. `ScreenScore/ScreenScore` is the post-game screen (the transition the user asked for
+  by name — "as soon as the match is complete and the 'score screen' button is pressed"), other
+  `Screen*` names mean menus, and `ScreenLoading` means a map is loading. Names come from two
+  working consumers of the endpoint (`leigholiver/OBS-SC2Switcher`, `Rairden/sc2-scenes`, the
+  latter with captured transitions) because **there is no official documentation** — the
+  s2client-proto `docs/` folder holds only `linux.md`, `protocol.md` and a PNG. `/game` and
+  `/ui` are read together and answer different questions: `/ui` says where the player *is*,
+  `/game` says what the game is *doing*.
+- **`screens: null` (could not read `/ui`) is NOT the same as `screens: []` (in a game).** In
+  `src/lib/client-api.ts` `fetchActiveScreens` returns `null` on failure; `decideMode` returns
+  `null` for it and the view is left alone. Collapsing the two would put a build-order guide
+  over the player's menus on a transient HTTP failure.
+- **`decideMode` is a pure function of one reading — no elapsed-time state.** It returns the
+  target mode and never a delta; deciding not to repeat an already-applied mode is the caller's
+  job, because `#lib/window-mode`'s store mirrors the shell and is the only authority on what
+  the window actually is. A "changed?" flag inside `decideMode` would be a second copy of that
+  state and would drift the first time a mode were set from anywhere else.
+- **A minimum window size is a hard floor the WM enforces, so it must move with the size.**
+  Leaving the 900x600 analysis floor in place while sizing down to the 380x300 overlay clamps
+  the overlay straight back to 900 wide. `apply_window_mode` therefore sets `min_size`/`max_size`
+  **per mode**; `tauri.conf.json` declares the same numbers for the first paint.
 - **The global shortcut cannot be tested by injecting keys on this machine.** XTEST
   synthesises keys but they do **not** reach XGrabKey grabs through Xwayland: a bare
   `XGrabKey` + XTEST test showed the grab never firing, so a hotkey test that "did nothing"
@@ -190,8 +226,9 @@ and there is no extra multiplier to apply.
   advisor must never react to the opponent or to the player — only to the predetermined times —
   because anything further treads into cheating. Reading the clock and the two races is the
   whole permitted surface: races are fixed before the first unit exists and never change, and the
-  guide is a fixed list either way. So `src/routes/overlay/+page.svelte` may use `displayTime`
-  and `matchupOf(players[0].race, players[1].race)`, and nothing else from the client API — no
+  guide is a fixed list either way. So `#lib/components/BuildOrderGuide.svelte` may use
+  `displayTime` and `matchupOf(players[0].race, players[1].race)`, and nothing else from the
+  client API — no
   supply, no unit counts, no positions, and no reacting to anything the game does after it
   starts. Never add a suggestion, an alert, or an adaptation.
 - **Replay analysis never touches the network; only `tools/refresh_build_snapshot.py` does.** The
@@ -224,8 +261,10 @@ and there is no extra multiplier to apply.
   indexing (such as `/analyze/[id]`) must **not** be prerendered — `adapter-static` treats
   a declared-but-unseen prerenderable route as a build error, so leaving the root rule
   alone is enough; do not add per-route opt-ins.
-- Ask Tauri for windows through the JS API where possible (`getByLabel` then a builder
-  fallback). A second window created in Rust *and* JS duplicates the route and the flags.
+- The app is a single window whose *view* is swapped in `src/routes/+layout.svelte`: the
+  build-order guide replaces the route children while the window is in overlay mode. A page
+  must therefore never assume it is always mounted — anything that must survive the swap
+  belongs above the layout, and the guide holds no state that the analysis pages need.
 - When adding a Tauri plugin, add it in **three** places or it fails at runtime rather
   than build time: `src-tauri/Cargo.toml`, the `.plugin(...)` chain in
   `src-tauri/src/lib.rs`, and its permission in `src-tauri/capabilities/default.json`. A
