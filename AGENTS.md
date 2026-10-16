@@ -201,6 +201,14 @@ and there is no extra multiplier to apply.
   `src/lib/client-api.ts` `fetchActiveScreens` returns `null` on failure; `decideMode` returns
   `null` for it and the view is left alone. Collapsing the two would put a build-order guide
   over the player's menus on a transient HTTP failure.
+- **The automatic mode switch is verified against a scripted client API, not only in unit tests.**
+  `/tmp/fs/fakeapi.py` (a throwaway, not in the repo) serves `/ui` and `/game` on port 6119 in a
+  scripted sequence — in-game `[]`, then `ScreenScore`, then a second game and score — and the
+  window geometry read back from KWin once a second shows the switch happening on its own
+  (`304x240` overlay ↔ `1024x684` analysis). Worth repeating after any change to `decideMode`,
+  the poll loop, or `apply_window_mode`, because the unit tests cover the decision and this covers
+  the wiring. **Bind the fake API and wait until it answers before starting the app**, or the
+  first poll races it and the app can latch the wrong mode.
 - **`decideMode` is a pure function of one reading — no elapsed-time state.** It returns the
   target mode and never a delta; deciding not to repeat an already-applied mode is the caller's
   job, because `#lib/window-mode`'s store mirrors the shell and is the only authority on what
