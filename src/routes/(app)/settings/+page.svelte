@@ -262,9 +262,9 @@
 			<dd>Always on top, click-through, follows the game clock.</dd>
 			<dt class="text-ink-500">Wayland note</dt>
 			<dd>
-				Tauri's shortcut support is X11-only. On KDE Wayland the binding may not register;
-				the overlay can still be opened from the Builds page. A compositor-level overlay is
-				planned (ADR 0003).
+				Tauri's own shortcut support is X11-only, so on Wayland the binding is made through the
+				compositor's GlobalShortcuts portal instead (it asks for approval once). If no binding
+				stays registered, the window can still be toggled from the Builds page.
 			</dd>
 		</dl>
 		{#if shortcutMessage}

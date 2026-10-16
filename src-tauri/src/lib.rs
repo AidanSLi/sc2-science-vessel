@@ -1,9 +1,16 @@
 //! The Rust shell for sc2-science-vessel.
 //!
-//! Its job is deliberately thin. It owns the main window, the overlay window, the single
-//! global shortcut, and the lifecycle of the Python analysis sidecar (ADR 0001). It does
-//! **not** parse replays, compute metrics, or decide anything about build orders — those
-//! live in the sidecar and the frontend.
+//! Its job is deliberately thin. It owns the **single** window, the global shortcut, and the
+//! lifecycle of the Python analysis sidecar (ADR 0001). It does **not** parse replays, compute
+//! metrics, or decide anything about build orders — those live in the sidecar and the frontend.
+//!
+//! There is one window with two modes, not two windows. `WindowMode::Overlay` makes it a
+//! borderless, transparent, click-through guide pinned over the game; `WindowMode::Analysis`
+//! restores an ordinary resizable window. `apply_window_mode` is the only place allowed to set
+//! those properties, because they do not reliably survive a hide/show cycle. The mode is chosen
+//! from the client's `/ui` screen list (ADR 0010), and visibility is the hotkey's business
+//! alone — the two are deliberately independent, so an automatic mode change never resurrects a
+//! window the player hid.
 //!
 //! Two constraints from the feasibility study shape this file and must not be broken:
 //!
@@ -11,10 +18,9 @@
 //!   The only sanctioned live input is the SC2 Client API on `localhost:6119`, which the
 //!   frontend polls directly (ADR 0004). This is what keeps the overlay on the benign
 //!   side of Blizzard's discretionary EULA clause.
-//! - The overlay is a plain always-on-top, click-through window for now. KDE exposes
-//!   `zwlr_layer_shell_v1`, so a real compositor-level overlay is reachable and is the
-//!   planned upgrade (ADR 0003); it will be a native window beside this one, not a
-//!   WebView trick.
+//! - The window is a plain always-on-top, click-through toplevel for now, positioned by
+//!   restacking over the game's X11 window (ADR 0008). KDE exposes `zwlr_layer_shell_v1`, so a
+//!   real compositor-level overlay surface is reachable and is the planned upgrade (ADR 0003).
 
 use std::path::Path;
 use tauri::{Emitter, Manager, WebviewWindow};
@@ -737,7 +743,7 @@ fn register_overlay_shortcut_via_x11(app: &tauri::AppHandle) {
         Err(err) => eprintln!(
             "no global shortcut could be registered ({err}); \
 			 the overlay can still be toggled from the app window. \
-			 Wayland needs the XDG GlobalShortcuts portal — see docs/adr/0003"
+			 The XDG GlobalShortcuts portal is the Wayland path — see docs/adr/0007"
         ),
     }
 }

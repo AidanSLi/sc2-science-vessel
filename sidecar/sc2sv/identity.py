@@ -22,6 +22,10 @@ The fields, as verified against the reference library:
 
 `team_id` compounds this: the first team holds `team_id == 0`, so a truthiness check on it
 silently discards the winning side. Teams are compared with `==`, never tested for truth.
+
+This module is the **only** place that resolves ownership, by decision (ADR 0009). A metric that
+reads `event.player` or `event.pid` itself re-opens the bug this module exists to close, and the
+bug is quiet: it produces plausible output rather than an error.
 """
 
 from __future__ import annotations

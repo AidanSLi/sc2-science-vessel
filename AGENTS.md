@@ -204,7 +204,7 @@ and there is no extra multiplier to apply.
   proves nothing about the app. To test the *registration* path instead, hold the key with an
   X `grab_key` in another process (see `/tmp/fallback-test.sh` for the shape): that makes a
   conflict deterministic and proves the fallback walk without pressing anything. Real presses
-  still need a human, or the XDG GlobalShortcuts portal (ADR 0003), which is testable over
+  still need a human, or the XDG GlobalShortcuts portal (ADR 0007), which is testable over
   D-Bus.
 - **A key held by another *X client* does not always block a Tauri shortcut registration.**
   Seeding `Ctrl+Alt+B` with a held grab did **not** fail registration in the app, while

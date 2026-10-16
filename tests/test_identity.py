@@ -6,7 +6,7 @@ empty because tracker events were read for ownership through `event.player`, whi
 in place so the same mistake cannot return silently — and each one is written so that reading
 the *wrong* field produces a specific, non-empty but incorrect answer.
 
-See `docs/adr/0007` for why attribution is centralised in one module.
+See `docs/adr/0009` for why attribution is centralised in one module.
 """
 
 from __future__ import annotations
