@@ -255,10 +255,6 @@ fn apply_window_mode(
             window.set_ignore_cursor_events(false)?;
             window.set_decorations(false)?;
             window.set_shadow(false)?;
-            // Not resizable: the overlay's size is part of its presentation, and a player
-            // dragging its edge mid-game would be resizing a guide they are trying to read.
-            // The size is restored programmatically when the mode is left.
-            window.set_resizable(false)?;
             window.set_skip_taskbar(true)?;
             if should_show {
                 window.show()?;
@@ -273,6 +269,14 @@ fn apply_window_mode(
             // is the same class of bug as click-through and always-on-top, so the fix is the
             // same: order the request after the mapping, not before it.
             window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))?;
+            // Deliberately NOT `set_resizable(false)`: GTK reads a non-resizable window as
+            // "size yourself to your content", and the WebView's natural size then beats both
+            // an explicit `set_size` and pinned min/max geometry hints. Measured on a cold
+            // start into overlay mode: with the flag set the window settled at 1280x2108 (the
+            // WebView's natural size) and KWin reported 1024x1686; leaving it alone produced
+            // the intended 380x300 / 304x240 every time. Nothing is lost, because overlay mode
+            // is also click-through — every pointer event passes through the window, so its
+            // edges cannot be dragged in the first place.
             reposition_for_overlay(&window, None);
             window.set_always_on_top(true)?;
             window.set_ignore_cursor_events(true)?;

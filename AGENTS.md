@@ -217,6 +217,15 @@ and there is no extra multiplier to apply.
   something else can refuse. Verify a window-size change by reading the real geometry back
   (`qdbus6 org.kde.KWin /KWin org.kde.KWin.getWindowInfo <uuid>`) — a `set_size` that returns
   `Ok` proves nothing about the size the window ended up with.
+- **Never call `set_resizable(false)` on the overlay: GTK reads it as "size me to my
+  content".** A non-resizable GTK window takes its size from its child's natural size, which
+  beats both an explicit `set_size` and pinned min/max geometry hints. Measured on cold starts
+  into overlay mode: with the flag set the window settled at **1280x2108** (the WebView's
+  natural size, KWin reporting 1024x1686), and without it the intended **380x300 / 304x240**
+  every time. The overlay is click-through anyway, so its edges cannot be dragged and the flag
+  buys nothing. Beware the trap that hid this: the app's own `inner_size()` read `1280x820`
+  right after `set_size`, and the wrong size appeared a few milliseconds *later* as GTK
+  re-applied the content size — so a read immediately after the call looked like success.
 - **A geometry request against an UNREALISED window is a race, not a guarantee.** GTK needs a
   realised `GdkWindow` before `set_size`/`set_position`/click-through mean anything, and a
   request issued before the window is first mapped is queued against a window that does not
