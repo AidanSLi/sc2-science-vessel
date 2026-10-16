@@ -143,10 +143,11 @@ while another application has focus" has a cross-platform protocol.
 | Platform / desktop | Overlay above a game window | Above an **active fullscreen** game | Global hotkey while the game has focus |
 | --- | --- | --- | --- |
 | **Windows** | yes (restacking) | see §5 — unverified | yes (`tauri-plugin-global-shortcut`) |
-| **Linux + X11**, any DE | yes (restacking) | only with the KWin rule, see §5 | yes (`XGrabKey`) |
+| **Linux + X11**, any DE | yes (restacking) | only with a compositor rule, see §5 | yes (`XGrabKey`) |
 | **Linux + KDE Wayland** | yes (via XWayland) | only with the KWin rule, see §5 | yes (XDG `GlobalShortcuts` portal) |
-| **Linux + GNOME Wayland** | no — see §5 | no | no — see §5 |
-| **Linux + other Wayland** (Hyprland, Sway, Niri, COSMIC) | no | no | depends on the portal |
+| **Linux + GNOME Wayland** | no — see §5 | no | **yes** (portal, GNOME 48+) |
+| **Linux + GNOME on X11** | yes, but this session is being removed — see §5 | as X11 | yes, but the session is going away |
+| **Linux + other Wayland** (Hyprland, Sway, Niri, COSMIC) | varies; layer-shell is available but the app does not use it yet | no | varies by portal backend |
 
 The app reports which case it is in, rather than failing silently: `overlay_supported_command` is
 exposed to the settings page.
@@ -183,8 +184,21 @@ These are recorded rather than papered over.
   `tools/overlay_fullscreen_rule.sh install` applies that rule per-user; it is a documented
   escape hatch, not the shipped mechanism, and it means the overlay will also sit above other
   applications' fullscreen windows.
-- **GNOME Wayland** implements neither the relevant part of the XDG `GlobalShortcuts` portal nor a
-  layer a normal window can reach above fullscreen. See the per-desktop table above.
+- **GNOME Wayland: the hotkey works, placing the overlay does not.** This is worth being precise
+  about, because the two capabilities have different causes. The *hotkey* is fine: GNOME
+  implements the `GlobalShortcuts` portal for real — `xdg-desktop-portal-gnome/src/globalshortcuts.c`
+  exports `org.freedesktop.portal.GlobalShortcuts` at version 2, backed by real `gnome-shell`
+  accelerators (`org.gnome.Shell`'s `accelerator-activated`), with the approval dialog provided by
+  gnome-control-center (`global-shortcuts-provider/`). It landed in the GNOME **48** cycle
+  (`NEWS`: "Add global shortcuts portal backend"). The *overlay* is the problem: mutter has no
+  `zwlr_layer_shell_v1` support (the request was closed as not-planned, mutter work item #1922),
+  and GTK's `gdk_wayland_window_set_keep_above` is an empty stub on every Wayland compositor, so
+  there is no way to place or float the window. GNOME's window layers for a Wayland client reduce
+  to `META_LAYER_{BOTTOM,DESKTOP,NORMAL,DOCK,TOP}` via `meta_window_get_default_layer`, with no
+  layer a normal client can reach above a focused fullscreen window.
+- **GNOME on X11 is not a fallback for much longer.** mutter made X11 off by default in GNOME 49
+  (MR #4454) and dropped the X11 backend entirely in GNOME 50 (MR #4505, merged 2025-11-05). So a
+  current GNOME user is on Wayland and the X11 escape hatch described above is not open to them.
 - **`--bundles rpm` is untested**: `rpmbuild` is not installed on the reference machine, so the
   bundler cannot produce one there.
 - **macOS is out of scope for now.** Replay analysis would work, but SC2 on Apple Silicon is

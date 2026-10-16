@@ -63,6 +63,15 @@
 		detail: null
 	});
 	let busy = $state(false);
+	/**
+	 * Whether this display server lets the overlay track the game window.
+	 *
+	 * `null` until the shell answers, so the page shows nothing rather than claiming a limitation
+	 * during the first frame. The answer is not derivable from the platform name: a Linux session
+	 * may be X11 (supported) or Wayland-only (not), and a Wayland user otherwise has no way to tell
+	 * "the overlay is broken" from "this display server cannot do this".
+	 */
+	let overlaySupported = $state<boolean | null>(null);
 
 	/** The overlay toggle key as registered by the shell, not as requested. */
 	let overlayShortcut = $state(DEFAULT_OVERLAY_SHORTCUT);
@@ -159,6 +168,16 @@
 		startHidden = settings.startHidden;
 		launchAtLogin = settings.launchAtLogin;
 		presets = (await loadPresets()).presets;
+		// Swallowed rather than surfaced: this is a diagnostic, and a failure to read it must not
+		// make the settings page look broken. The `null` state already means "not answered".
+		if (isTauri()) {
+			try {
+				const { invoke } = await import('@tauri-apps/api/core');
+				overlaySupported = await invoke<boolean>('overlay_supported_command');
+			} catch {
+				overlaySupported = null;
+			}
+		}
 	})();
 
 	onDestroy(() => clearInterval(timer));
@@ -352,13 +371,26 @@
 			</dd>
 			<dt class="text-ink-500">Behaviour</dt>
 			<dd>Always on top, click-through, follows the game clock.</dd>
+			<dt class="text-ink-500">Follows the game window</dt>
+			<dd>
+				{#if overlaySupported === null}
+					<span class="text-ink-500">not checked</span>
+				{:else if overlaySupported}
+					Yes — the guide is placed in the game window's top-left corner and moves with it.
+				{:else}
+					<span class="text-amber-400">
+						No on this display server. The guide still opens and still follows the game clock, but
+						it cannot be placed next to the game window or guaranteed to stay above it. See
+						<code class="rounded bg-surface-950 px-1 py-0.5 text-xs">docs/adr/0008</code>.
+					</span>
+				{/if}
+			</dd>
 			<dt class="text-ink-500">Wayland note</dt>
 			<dd>
 				Tauri's own shortcut support is X11-only, so on Wayland the binding is made through the
 				compositor's GlobalShortcuts portal instead (it asks for approval once). If no binding
 				stays registered, the window can still be toggled from the Builds page.
-			</dd>
-		</dl>
+			</dd>		</dl>
 		{#if shortcutMessage}
 			<p class="mt-3 text-xs {shortcutError ? 'text-amber-400' : 'text-ink-400'}">
 				{shortcutMessage}
