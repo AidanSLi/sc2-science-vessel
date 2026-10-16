@@ -49,21 +49,29 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Type-check and build the frontend
-        run: |
-          pnpm check
-          pnpm build
+      - name: Type-check the frontend
+        run: pnpm check
+
+      - name: Run the frontend test suite
+        run: pnpm test
+
+      - name: Build the frontend
+        run: pnpm build
 
       - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           cache-dependency-glob: sidecar/pyproject.toml
 
-      - name: Run the sidecar test suite
-        # `uv run` resolves the sidecar's own pinned dependencies from sidecar/pyproject.toml and
-        # manages its virtualenv, so no interpreter setup or pip install is needed here.
-        working-directory: sidecar
-        run: uv run --group dev pytest
+      - name: Run the Python test suite
+        # Run from the repository root, NOT from sidecar/: pytest.ini lives here and sets
+        # `testpaths = tests` and `pythonpath = sidecar .`, so the suite spans both trees. Run
+        # from sidecar/ and pytest collects nothing and exits 0, which would make this job a
+        # no-op that always passes.
+        #
+        # --project sidecar resolves the test dependencies from sidecar/pyproject.toml while the
+        # root stays the working directory and the source root for imports.
+        run: uv run --project sidecar --group dev pytest
 
   linux:
     needs: verify
