@@ -48,6 +48,52 @@
 - **Global shortcuts are X11-only** (Tauri issue 3578). Registering on Wayland is expected to
   fail, which is why `setup` logs the error and continues instead of returning it: an error
   out of `setup` takes the whole app down, leaving no window to toggle the overlay from.
+  The working path is the XDG `GlobalShortcuts` portal (ADR 0007), and the two mechanisms are
+  deliberately exclusive — registered both at once, one keypress toggles the window twice,
+  because on Wayland the X11 grab still fires while our window has focus.
+
+- **A portal binding with an empty trigger is a permanent failure, not a transient one.** When
+  the compositor's approval dialog is dismissed, KDE registers the shortcut id with **no key**
+  so it will never ask again — observed as `toggle-overlay=none,none,…` in
+  `~/.config/kglobalshortcutsrc` and `unknown key ""` in the portal's own log. The app reported
+  success while the key was dead for the life of the install. `bind_overlay_shortcut_via_portal`
+  now checks `trigger_description()` for a non-empty value and returns `false` so the X11
+  fallback runs. Do not remove that check, and do not assume re-running the app re-prompts — it
+  does not; the user has to clear the entry or set a key in System Settings.
+
+- **The portal resolves a host app's identity from its systemd scope plus a `.desktop` file.**
+  `xdg-desktop-portal` refuses with `XDG_DESKTOP_PORTAL_ERROR_NOT_ALLOWED "An app id is
+  required"` when it cannot determine one, and derives it from the unit name
+  `app-<ApplicationID>-<random>.scope` (`xdp-app-info-host.c`). A binary run from a terminal
+  inherits the terminal's id — ours showed up as `org.kde.konsole`, which is why the portal's
+  binding landed under `[org.kde.konsole]` in `kglobalshortcutsrc`. A bundled `.deb`/`.rpm`
+  installs the right `.desktop`; for development a
+  `~/.local/share/applications/dev.aidansli.sc2-science-vessel.desktop` is enough.
+
+- **The app is resident, so the frontend cannot be the thing that watches for a game.** A
+  hidden WebKitGTK widget has its page timers suspended, so a `setInterval` poller in the UI
+  goes silent exactly when the app is meant to be working. Game-start detection and the hint
+  popup therefore live in `src-tauri/src/game_watch.rs`, and the notification is sent and
+  closed by hand because **Plasma ignores the timeout on a critical notification** (measured:
+  still on screen at t+8s with `-t 4000`, and repeated sends stack). See ADR 0012.
+
+- **An always-on-top window cannot cover an active fullscreen client.** KWin's
+  `Window::belongsToLayer()` tests `isActiveFullScreen()` before `keepAbove()`, so a focused
+  fullscreen window is on `ActiveLayer`, above `AboveLayer`. A window typed
+  `_NET_WM_WINDOW_TYPE_CRITICAL_NOTIFICATION` is on `CriticalNotificationLayer`, which *is*
+  above it — that is the whole reason the hint is a notification. Measured in pixels: with the
+  probe active the overlay contributed 0; typed as a critical notification, a window was
+  visible. See ADR 0011.
+
+- **The frame offset is the reason the overlay drifts.** `get_geometry` on an X11 window is
+  parent-relative, so an overlay positioned from it lands in the wrong place as soon as the
+  game moves. `x11_overlay::find_game_window` uses `translate_coordinates` against the root for
+  that reason. Game-window matching is by **title**, not `WM_CLASS`: the game is launched
+  through Steam/Battle.net and Wine reports the launcher's class
+  (`class=('steam_app_default','steam_app_default')`, title `'StarCraft II'`), so class
+  matching either misses the game or matches half of Steam's helpers. Titles are ranked — an
+  exact `StarCraft II`/`StarCraft 2` beats a prefix match like `StarCraft II — Dolphin`, which
+  otherwise competes with the real game — and ties break on area.
 
 ## Testing
 
