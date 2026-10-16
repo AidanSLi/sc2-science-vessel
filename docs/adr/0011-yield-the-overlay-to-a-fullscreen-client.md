@@ -68,11 +68,33 @@ one of:
 
 - `wlr-layer-shell`'s `overlay` layer (ADR 0003), which covers other applications' fullscreen
   windows as a consequence; or
-- a documented, opt-in KWin window rule (`layer=overlay`), which was verified to move the window
-  from `layer: 2` to `layer: 9` — presented as a workaround, never applied silently.
+- a documented, opt-in KWin window rule (`layer=overlay`), which was verified end to end on
+  KWin 6.7.5: with the rule applied the app's window reports `layer=9` (`OverlayLayer`) while
+  another client's fullscreen window reports `layer=5` (`ActiveLayer`), so it stays on screen
+  over a fullscreen game. `tools/overlay_fullscreen_rule.sh` installs and removes it.
 
 Both are user-visible changes to the whole desktop's stacking, which is why neither is the
-default.
+**default**.
+
+### The rule is case-sensitive in a way that is easy to get wrong
+
+KWin matches a rule's `wmclass` against `Window::resourceClass()` (or, with
+`wmclasscomplete`, `resourceName` + `' '` + `resourceClass`), and `Rules::matchWMClass`
+(`src/rules.cpp:365`) compares **case-sensitively** for both `ExactMatch` and `SubstringMatch`.
+The app on the X11 backend reports `WM_CLASS(STRING) = "sc2-science-vessel", "Sc2-science-vessel"`.
+
+So any rule written from how the app names itself — `wmclass=sc2-science-vessel`, which is
+what a first attempt used — matches the *resource name* and silently never fires, because the
+class is capitalised. Worse, it appears to work at first: without the rule the window is in
+`AboveLayer` (3) because of keep-above, which looks like a success if you only check
+"is it above the game". The rule that actually works is the capitalised
+`wmclass=Sc2-science-vessel` (or a lowercase `sc2-science` substring, which matches the
+capitalised class case-insensitively at that position because the string happens to be
+lowercase after the first character).
+
+This was found by trying the variants in one pass and reading KWin's layer back for each
+(`/tmp/fs/rulefix.sh`): the first two variants sat at `layer=3`, the capitalised ones reached
+`layer=9`.
 
 ## Consequences
 

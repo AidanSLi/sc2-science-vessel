@@ -11,6 +11,15 @@ for the app to run offline.
   (build version, matchup, length, MMR presence). The feasibility study used this against
   722 replays at ~3 ms each. It is standalone on purpose: it imports `sc2reader`/`mpyq`
   directly instead of `sc2sv`, so it can still run when `sc2sv` will not import.
+- `overlay_fullscreen_rule.sh` — `install`/`remove`/`status` for the opt-in KWin window rule
+  that lifts the app's window into KWin's `OverlayLayer`, which is the only band above an
+  *active fullscreen* window. Needed because a fullscreen client defeats `always_on_top` on
+  KWin by design (`Window::belongsToLayer()` tests `isActiveFullScreen()` before
+  `keepAbove()`), and stacking order sorts purely by layer index. It is a desktop-wide change
+  — `OverlayLayer` is above every fullscreen window, including other applications' — so it is
+  user-run and never applied by the app. The class string in it must be **capitalised**
+  (`Sc2-science-vessel`): KWin matches `WM_CLASS` case-sensitively, and a lowercase rule matches
+  the resource *name* and silently never fires. See `docs/adr/0011`.
 - `extract_build_order.py` (planned) — prints the extracted build order for one replay via
   `spawningtool.parser.parse_replay`. Note that its `time` labels use the pre-LotV 22.4 fps
   constant; use `frame / 16`, or `sc2sv.builds`, which already does.

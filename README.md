@@ -58,6 +58,26 @@ Under X11 the window opens but nothing is presented, while stderr repeats
 saying so. `WEBKIT_DISABLE_DMABUF_RENDERER=0` restores it deliberately if your drivers
 handle it. See `docs/adr/0005-disable-webkitgtk-dmabuf-renderer.md`.
 
+### The overlay over a fullscreen game (KDE Plasma Wayland)
+
+The overlay sits above the game and follows it while the game is a normal window. It cannot do
+so while the game is **fullscreen**: KWin puts a focused fullscreen window on its `ActiveLayer`,
+which is above every layer an always-on-top window can reach, and stacking order sorts purely by
+layer index. While that is the case the app drops its always-on-top claim rather than pretend,
+so the overlay is behind the game but can be raised and read.
+
+If you want it genuinely over a fullscreen game, install the optional KWin rule:
+
+```bash
+./tools/overlay_fullscreen_rule.sh install   # then restart the app
+./tools/overlay_fullscreen_rule.sh remove    # to undo
+```
+
+This lifts the window into KWin's `OverlayLayer`, which does cover fullscreen windows — but also
+every other application's, so it is a desktop-wide change and is never applied automatically.
+The alternative is to run SC2 in **borderless/windowed fullscreen**, where everything works with
+no configuration. See `docs/adr/0011-yield-the-overlay-to-a-fullscreen-client.md`.
+
 ### If the window looks blank
 
 The main window is created hidden and is shown by the first page that paints, so it should
