@@ -392,6 +392,37 @@ and there is no extra multiplier to apply.
   `http:default` limited to `http://localhost:6119/*` and `http://127.0.0.1:6119/*` — if
   a change needs a broader scope, it needs an ADR first.
 
+## Packaging and platform support
+
+- `docs/packaging.md` is the record; read it before touching the bundler or the CI workflow.
+- Tauri's Linux `--bundles` accepts exactly `deb`, `rpm`, `appimage` — there is **no pacman
+  target**, so Arch is served by the AppImage (or a hand-written AUR `PKGBUILD`). Never plan on a
+  separate "Arch build".
+- The Python sidecar must be frozen **before** the Tauri build (`tools/build_sidecar.py`), because
+  `externalBin` is resolved at bundle time. Three things fail at runtime rather than build time if
+  done wrong: the filename must carry the host target triple (ask `rustc -vV`, do not guess),
+  `--collect-data sc2reader` is mandatory (three JSON data files), and the PyInstaller entry point
+  must be a module shim rather than `sc2sv/cli.py` (relative imports).
+- A missing sidecar makes the build fail loudly (`resource path ... doesn't exist`); it does not
+  produce a bundle without it. Keep it that way — do not add a fallback that silently skips it.
+- Keep `src-tauri/tauri.conf.json`'s `targets` free of `rpm`: `rpmbuild` is not installed on the
+  reference machine, so a plain local `pnpm tauri build` would fail for a reason that has nothing
+  to do with the change being made.
+- Platform-specific window code lives behind `src-tauri/src/platform/`. `lib.rs` must never name a
+  platform type: adding a platform means adding a `platform` implementation, not another `#[cfg]`
+  in the watcher. `AnchorOutcome::Unsupported` and `::NoGame` are deliberately different — the
+  first stops the watcher, the second keeps it alive.
+- `CLAIM_ALWAYS_ON_TOP` is `false` on Windows. A topmost window is above every non-topmost window,
+  which is *stronger* than the requirement ("above the game, able to go behind a window the player
+  raises over it"); restacking expresses the requirement exactly.
+- On Windows `SetWindowPos`'s `hWndInsertAfter` names the window that *precedes* the positioned
+  window in Z order, so passing the game's handle puts the overlay **below** the game. Pass
+  `GetWindow(game, GW_HWNDPREV)` (the window currently above the game), falling back to
+  `HWND_TOP`. Always include `SWP_NOACTIVATE` or the restack steals focus from the game.
+- Windows code is written from the documented API but has never been run on Windows: there is no
+  Windows machine here and no Windows target links on Linux. Do not describe it as verified, and
+  treat the first real Windows run as the verification step.
+
 ## Updating this file
 
 Whenever a code convention or hard-won platform constraint is decided or changed, record

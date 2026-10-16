@@ -23,6 +23,11 @@
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{AtomEnum, ConfigureWindowAux, ConnectionExt, StackMode, Window};
 
+// The game's identifying titles and the minimum plausible side length are shared with the Windows
+// implementation rather than duplicated, so the two cannot drift into disagreeing about what the
+// game's window looks like.
+use crate::platform::{GAME_WINDOW_TITLE_PREFIXES, MIN_GAME_WINDOW_SIDE};
+
 /// The game's window: its X id and where it is on screen.
 ///
 /// The id is carried alongside the rectangle because keeping the overlay above the game
@@ -60,17 +65,15 @@ pub struct Rect {
     pub height: u32,
 }
 
-/// Window-title prefixes that identify the game.
-///
-/// Matched case-insensitively as a prefix. The window is identified by *title* rather than
-/// by `WM_CLASS` because Wine reports the class of the launcher: a StarCraft II started
-/// through Steam or Battle.net appears as `steam_app_default`, so class matching would
-/// either miss the game or match half of Steam's helper windows.
-///
-/// A prefix match alone is too loose, which is why [`game_title_rank`] exists: a file manager
-/// opened on the replays folder is titled `StarCraft II — Dolphin` and is frequently *larger*
-/// than the game, so picking the biggest prefix match anchors the overlay to the file manager.
-const GAME_WINDOW_TITLE_PREFIXES: &[&str] = &["starcraft ii", "starcraft 2"];
+// The window is identified by *title* rather than by `WM_CLASS` because Wine reports the class of
+// the launcher: a StarCraft II started through Steam or Battle.net appears as
+// `steam_app_default`, so class matching would either miss the game or match half of Steam's
+// helper windows.
+//
+// A prefix match alone is too loose, which is why `game_title_rank` exists: a file manager opened
+// on the replays folder is titled `StarCraft II — Dolphin` and is frequently *larger* than the
+// game, so picking the biggest prefix match anchors the overlay to the file manager. The titles
+// themselves live in `crate::platform`, shared with the Windows implementation.
 
 /// Titles that can only be the game itself, matched case-insensitively.
 ///
@@ -101,12 +104,10 @@ fn game_title_rank(title: &str) -> Option<u8> {
     None
 }
 
-/// Smallest window that can plausibly be the game, in pixels per side.
-///
-/// Wine creates several tiny helper windows whose titles can look game-like (an "Xalia event
-/// window", `Default IME` placeholders, a 1x1 hidden toplevel). Requiring a plausible game
-/// size filters them out without needing a hard-coded window id.
-const MIN_GAME_WINDOW_SIDE: u32 = 400;
+// Wine creates several tiny helper windows whose titles can look game-like (an "Xalia event
+// window", `Default IME` placeholders, a 1x1 hidden toplevel). `MIN_GAME_WINDOW_SIDE` is what
+// filters them out without needing a hard-coded window id; it lives in `crate::platform`, shared
+// with the Windows implementation.
 
 /// Title prefix of this application's own window, matched case-insensitively.
 ///

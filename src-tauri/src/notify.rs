@@ -34,6 +34,24 @@
 //! A critical notification is visually louder than an ordinary one. That is the price of it
 //! being visible over a fullscreen game at all, and it is paid only at game start — once per
 //! game, for [`POPUP_LIFETIME`].
+//!
+//! ## Windows, where none of the above applies
+//!
+//! Everything in this module's reasoning is KDE-specific, and it is worth being explicit about
+//! what carries over rather than implying the same measurements exist everywhere:
+//!
+//! - **Urgency does not exist.** `notify-rust` 4.18 routes Windows to a WinRT toast backend
+//!   (`src/windows.rs`), and `Urgency` is a no-op there — there is no Windows notification
+//!   urgency a caller can set through this API. The toast simply appears.
+//! - **Whether a toast covers a fullscreen game is not established here.** Windows has its own
+//!   fullscreen behaviour for toasts, and DirectX exclusive fullscreen is a different case again
+//!   from borderless. This was not measurable without a Windows machine, so it is recorded as an
+//!   open question rather than assumed to work.
+//! - **The manual close still works**, and still matters: a Windows toast can be configured by
+//!   the user to persist in the Action Center, and `close()` removes it.
+//!
+//! So on Windows the popup is best-effort in the same sense the overlay is: it is written to the
+//! documented API, and the first run on real hardware is where the behaviour gets confirmed.
 
 use std::time::Duration;
 
@@ -75,7 +93,8 @@ pub fn show_game_start_popup(shortcut: &str) {
         .appname("sc2-science-vessel")
         .summary(POPUP_TITLE)
         .body(&body)
-        // Critical is what makes it visible over a fullscreen game; see the module note.
+        // Critical is what makes it visible over a fullscreen game on KDE; see the module note.
+        // It is a no-op on Windows, where the toast backend ignores urgency entirely.
         .urgency(notify_rust::Urgency::Critical)
         .show()
     {

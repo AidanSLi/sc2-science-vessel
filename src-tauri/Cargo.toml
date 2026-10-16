@@ -41,12 +41,28 @@ tauri-plugin-notification = "2.7.0"
 tauri-plugin-autostart = "2.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Tauri implements this trait but does not re-export it, and it is the only way to reach the
+# platform window handle: the X11 window id on Linux and the Win32 `HWND` on Windows (ADR 0008).
+# Must match the 0.6 line Tauri links against, or the trait implementation would not be the same
+# trait and the downcast would never match.
+raw-window-handle = "0.6"
 
 # The XDG `GlobalShortcuts` portal client, used on Linux to get a compositor-level grab
 # instead of the X11 grab that cannot see keypresses while the game holds focus (ADR 0008).
 # `async-io` rather than ashpd's default `tokio` backend, so the futures can be driven with
 # `futures-lite` on a plain thread and no second async runtime is pulled into an app that
 # already has one. Linux-gated because no other platform has this portal.
+[target.'cfg(windows)'.dependencies]
+# Win32 window enumeration and Z-order control: finding the game window
+# (EnumWindows/GetWindowRect) and restacking the overlay directly above it
+# (SetWindowPos). Pinned to a specific minor line because this crate makes
+# breaking changes between minor versions, unlike most. Pairs with
+# raw-window-handle 0.6 to get the Win32 handle out of a Tauri window.
+windows = { version = "0.62", features = [
+	"Win32_Foundation",
+	"Win32_UI_WindowsAndMessaging",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts"] }
 futures-lite = "2"
@@ -54,10 +70,6 @@ futures-lite = "2"
 # window to match a changed shortcut against (ADR 0008). Only the connection, property and
 # geometry requests are used — no extension, no events.
 x11rb = { version = "0.13", default-features = false, features = ["allow-unsafe-code"] }
-# Tauri implements this trait but does not re-export it, so the direct dependency is what
-# makes the window's X id reachable (ADR 0008). Must match the 0.6 line Tauri links against,
-# or the trait implementation would not be the same trait.
-raw-window-handle = "0.6"
 
 [profile.release]
 codegen-units = 1
