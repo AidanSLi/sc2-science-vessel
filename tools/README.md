@@ -11,6 +11,16 @@ for the app to run offline.
   (build version, matchup, length, MMR presence). The feasibility study used this against
   722 replays at ~3 ms each. It is standalone on purpose: it imports `sc2reader`/`mpyq`
   directly instead of `sc2sv`, so it can still run when `sc2sv` will not import.
+- `build_sidecar.py` — freezes `sidecar/` into a single executable with PyInstaller and writes
+  it to `src-tauri/sc2sv-sidecar-<target-triple>`, which is where Tauri's `externalBin` looks.
+  **Run this before `pnpm tauri build`, on every platform**: without it the build fails
+  (`resource path 'sc2sv-sidecar-x86_64-unknown-linux-gnu' doesn't exist`), which is deliberate —
+  a bundle that installs cleanly and cannot analyse a replay is worse than no bundle. Three
+  details fail at *runtime* rather than build time if changed: the filename must carry the host
+  target triple (ask `rustc -vV`, do not guess), `--collect-data sc2reader` is required (unit
+  costs and build times), and the PyInstaller entry point must be a module shim rather than
+  `sc2sv/cli.py` (relative imports). The output is ~19 MiB per platform and is gitignored.
+  See `docs/packaging.md`.
 - `overlay_fullscreen_rule.sh` — `install`/`remove`/`status` for the opt-in KWin window rule
   that lifts the app's window into KWin's `OverlayLayer`, which is the only band above an
   *active fullscreen* window. Needed because a fullscreen client defeats `always_on_top` on

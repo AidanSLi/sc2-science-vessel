@@ -3,6 +3,15 @@
 How a build becomes something a player can install, which formats ship for which system, and the
 things that silently break an installer if they are forgotten.
 
+- **The overlay hotkey and the overlay position are two different problems, and only the first
+  has a portable answer.** The hotkey has a real cross-compositor protocol (the XDG
+  `GlobalShortcuts` portal), which is why the app uses `ashpd` rather than
+  `tauri-plugin-global-shortcut`. The position has no protocol at all: it needs either X11
+  restacking, Windows `SetWindowPos`, or the compositor-specific `zwlr_layer_shell_v1`. Adding a
+  desktop environment therefore means adding a *positioning* backend, not a hotkey backend — and
+  the answer to "does this need separate work per DE/WM?" is: for the hotkey, no; for the overlay
+  position, yes, unless the compositor takes the X11 or layer-shell path.
+
 This is a record of decisions and their reasons. The build itself is
 `.github/workflows/release.yml`.
 
@@ -147,7 +156,7 @@ while another application has focus" has a cross-platform protocol.
 | **Linux + KDE Wayland** | yes (via XWayland) | only with the KWin rule, see §5 | yes (XDG `GlobalShortcuts` portal) |
 | **Linux + GNOME Wayland** | no — see §5 | no | **yes** (portal, GNOME 48+) |
 | **Linux + GNOME on X11** | yes, but this session is being removed — see §5 | as X11 | yes, but the session is going away |
-| **Linux + other Wayland** (Hyprland, Sway, Niri, COSMIC) | varies; layer-shell is available but the app does not use it yet | no | varies by portal backend |
+| **Linux + other Wayland** (Hyprland, Sway, Niri, COSMIC) | **these all implement `zwlr_layer_shell_v1`**, which GNOME does not — the app does not use it yet (ADR 0003) | yes, *via layer-shell* — not yet implemented | Hyprland: yes (its own portal implements `GlobalShortcuts`). Others: varies by backend |
 
 The app reports which case it is in, rather than failing silently: `overlay_supported_command` is
 exposed to the settings page.
@@ -170,6 +179,19 @@ All three are needed. On the X11 backend through XWayland all three work, which 
 ---
 
 ## 5. Open questions and known limitations
+
+- **The other Wayland compositors are the ones that would work best, and the app is not using
+  them yet.** Hyprland, Sway, Niri and COSMIC all implement `zwlr_layer_shell_v1`
+  (`xdg-desktop-portal-hyprland/src/portals/GlobalShortcuts.cpp` for the hotkey;
+  `niri/src/handlers/layer_shell.rs` and `cosmic-comp/src/wayland/handlers/layer_shell.rs` for the
+  layer), and the `overlay` layer of that protocol is above a focused fullscreen client. ADR 0003
+  specifies promoting the window to a layer-shell surface; doing so would make the overlay work on
+  those compositors *natively* — better than the XWayland route used today. It is not implemented
+  because `gtk-layer-shell` is not a Tauri dependency and the workflow was carried by the X11
+  path, which works on the reference system.
+- **Hyprland's portal advertises `UseIn=wlroots;Hyprland;sway;Wayfire;river;`**, so on those
+  compositors `xdg-desktop-portal` will select a backend whose global-shortcut support is backed
+  by Hyprland's own protocol. Whether that holds up on Sway or Niri has not been tested here.
 
 These are recorded rather than papered over.
 
