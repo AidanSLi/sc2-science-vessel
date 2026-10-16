@@ -19,6 +19,8 @@
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
+mod portal_shortcut;
 mod settings;
 mod sidecar;
 
@@ -50,15 +52,19 @@ fn toggle_overlay(app: tauri::AppHandle) -> tauri::Result<bool> {
 			window.hide()?;
 			return Ok(false);
 		}
-		apply_overlay_flags(&window)?;
 		window.show()?;
+		apply_overlay_flags(&window)?;
 		window.set_focus()?;
 		return Ok(true);
 	}
 
 	let window = create_overlay_window(&app)?;
-	apply_overlay_flags(&window)?;
+	// Show *before* applying the flags, never after: click-through is the one window
+	// request tao's Linux backend does not guard, and it panics on an unrealized window
+	// (see `apply_overlay_flags`). The requests are queued on one channel and handled in
+	// order, so this guarantees realisation happens first.
 	window.show()?;
+	apply_overlay_flags(&window)?;
 	Ok(true)
 }
 
@@ -259,34 +265,13 @@ pub fn run() {
 		// is X11-only — and an error returned from `setup` would take the whole app down
 		// with it, leaving the player with no window to toggle the overlay from either.
 		.setup(|app| {
-			// Register from the stored setting, not a constant, so a rebind survives a
-			// restart. `register_overlay_shortcut` walks a fallback list when the stored key
-			// is taken, so a fresh install still gets a working toggle key.
-			let loaded = Settings::load(app.handle());
-			match settings::register_overlay_shortcut(app.handle(), &loaded.overlay_shortcut) {
-				Ok(registered) => {
-					if registered != loaded.overlay_shortcut {
-						eprintln!(
-							"overlay shortcut {} was unavailable; registered {registered} instead",
-							loaded.overlay_shortcut
-						);
-					}
-					// Persist the substitution so the settings page shows the key that actually
-					// works rather than the one that failed to register.
-					if registered != loaded.overlay_shortcut {
-						let mut updated = loaded.clone();
-						updated.overlay_shortcut = registered;
-						if let Err(err) = updated.save(app.handle()) {
-							eprintln!("could not persist the fallback shortcut ({err})");
-						}
-					}
-				}
-				Err(err) => eprintln!(
-					"no global shortcut could be registered ({err}); \
-					 the overlay can still be toggled from the app window. \
-					 Wayland needs the XDG GlobalShortcuts portal — see docs/adr/0003"
-				),
-			}
+			// Register the toggle key on a background thread, not here. On Wayland the
+			// portal's `BindShortcuts` opens a compositor approval dialog that the user may
+			// take any amount of time to answer, and blocking `setup` would mean the main
+			// window never appeared until they did. The thread tries the portal first and
+			// falls back to the X11 plugin (see `register_overlay_shortcut`).
+			let handle = app.handle().clone();
+			std::thread::spawn(move || register_overlay_shortcut(&handle));
 			arm_main_window_watchdog(app.handle().clone());
 			Ok(())
 		})
@@ -320,6 +305,198 @@ pub fn run() {
 ///
 /// @param app The running app handle.
 /// @returns The newly created overlay window.
+/// Registers the overlay toggle key, preferring the Wayland portal over the X11 grab.
+///
+/// The two mechanisms must not both be active. `tauri-plugin-global-shortcut`'s X11 grab
+/// is app-scoped on Wayland, so it still fires while the app itself has focus; if the
+/// portal also held the key, one keypress would toggle the overlay twice and appear to do
+/// nothing. So this tries exactly one of them, portal first.
+///
+/// The portal is preferred because its grabs are compositor-level and therefore keep
+/// working while the game holds focus — the entire point of the key. It is not guaranteed:
+/// `CreateSession` is refused outright when the portal cannot resolve an application id,
+/// which happens for a binary launched from a shell without a matching `.desktop` file.
+/// The X11 plugin is the fallback, and it is also the only path on Windows and macOS.
+///
+/// @param app The running app handle.
+#[cfg(target_os = "linux")]
+fn register_overlay_shortcut(app: &tauri::AppHandle) {
+	// The portal conversation has to happen off the main thread: `BindShortcuts` waits for
+	// the user to answer the compositor's dialog, which can take arbitrarily long, and the
+	// main thread has a window to show. The X11 fallback is decided *inside* that thread so
+	// it is only taken when the portal actually refused — registering both would make one
+	// keypress toggle the overlay twice.
+	let app = app.clone();
+	std::thread::spawn(move || {
+		if !bind_overlay_shortcut_via_portal(&app) {
+			register_overlay_shortcut_via_x11(&app);
+		}
+	});
+}
+
+/// Registers the overlay key through `tauri-plugin-global-shortcut` on non-Linux platforms.
+///
+/// Windows and macOS have no XDG portal, so the plugin *is* the global-shortcut mechanism
+/// there rather than a fallback for one.
+///
+/// @param app The running app handle.
+#[cfg(not(target_os = "linux"))]
+fn register_overlay_shortcut(app: &tauri::AppHandle) {
+	register_overlay_shortcut_via_x11(app);
+}
+
+/// Registers the overlay key through `tauri-plugin-global-shortcut`.
+///
+/// This is the X11 path on Linux, and the only path on Windows and macOS. It is separate
+/// from `register_overlay_shortcut` because the Wayland portal runs on its own thread and
+/// reaches here as a fallback when it refuses the binding.
+///
+/// @param app The running app handle.
+fn register_overlay_shortcut_via_x11(app: &tauri::AppHandle) {
+	let loaded = Settings::load(app);
+
+	// Register from the stored setting, not a constant, so a rebind survives a restart.
+	// `register_overlay_shortcut` walks a fallback list when the stored key is taken, so a
+	// fresh install still gets a working toggle key.
+	match settings::register_overlay_shortcut(app, &loaded.overlay_shortcut) {
+		Ok(registered) => {
+			if registered != loaded.overlay_shortcut {
+				eprintln!(
+					"overlay shortcut {} was unavailable; registered {registered} instead",
+					loaded.overlay_shortcut
+				);
+				// Persist the substitution so the settings page shows the key that actually
+				// works rather than the one that failed to register.
+				let mut updated = loaded.clone();
+				updated.overlay_shortcut = registered;
+				if let Err(err) = updated.save(app) {
+					eprintln!("could not persist the fallback shortcut ({err})");
+				}
+			}
+		}
+		Err(err) => eprintln!(
+			"no global shortcut could be registered ({err}); \
+			 the overlay can still be toggled from the app window. \
+			 Wayland needs the XDG GlobalShortcuts portal — see docs/adr/0003"
+		),
+	}
+}
+
+/// Binds the overlay toggle key to the XDG `GlobalShortcuts` portal.
+///
+/// Drives the whole portal conversation on the calling thread and then, if the binding
+/// succeeded, stays there to relay `Activated` signals for the rest of the process's life.
+/// That is why it never returns `true` without a live activation loop behind it: a bound
+/// shortcut with nobody listening would be worse than no bound shortcut, because the
+/// compositor would swallow the key and nothing would happen.
+///
+/// Errors are reported and turned into `false` rather than propagated: every failure here
+/// is either "this compositor does not implement the portal" or "the portal refused this
+/// app", and both have the same response — fall back to the X11 plugin.
+///
+/// @param app The running app handle, used to toggle the overlay when the key is pressed.
+/// @returns `true` if the portal took the binding and an activation loop is running.
+#[cfg(target_os = "linux")]
+fn bind_overlay_shortcut_via_portal(app: &tauri::AppHandle) -> bool {
+	use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
+	use futures_lite::StreamExt;
+
+	let loaded = Settings::load(app);
+	let trigger = match portal_shortcut::to_portal_trigger(&loaded.overlay_shortcut) {
+		Some(trigger) => trigger,
+		None => {
+			eprintln!(
+			"overlay shortcut {:?} names no key, so the portal cannot bind it",
+			loaded.overlay_shortcut
+			);
+			return false;
+		}
+	};
+
+	portal_shortcut::block_on(async move {
+		let shortcuts = match GlobalShortcuts::new().await {
+			Ok(shortcuts) => shortcuts,
+			Err(err) => {
+				eprintln!("global shortcut portal unavailable ({err})");
+				return false;
+			}
+		};
+
+		// `CreateSessionOptions::default()` fills in the two tokens the portal requires.
+		// Omitting them is not a soft failure: xdg-desktop-portal 1.22.1 aborts on an
+		// assertion when `CreateSession` is called without them.
+		let session = match shortcuts.create_session(Default::default()).await {
+			Ok(session) => session,
+			Err(err) => {
+				eprintln!(
+					"global shortcut portal declined a session ({err}); \
+					 falling back to the X11 shortcut plugin"
+				);
+				return false;
+			}
+		};
+
+		let shortcut = NewShortcut::new(
+			portal_shortcut::OVERLAY_SHORTCUT_ID,
+			portal_shortcut::OVERLAY_SHORTCUT_DESCRIPTION,
+		)
+		.preferred_trigger(trigger.as_str());
+
+		// Opens the compositor's approval dialog. The user may decline, in which case the
+		// portal still records the binding with no key so it does not ask again.
+		let request = match shortcuts
+			.bind_shortcuts(&session, &[shortcut], None, Default::default())
+			.await
+		{
+			Ok(request) => request,
+			Err(err) => {
+				eprintln!("could not bind the overlay shortcut via the portal ({err})");
+				return false;
+			}
+		};
+
+		// This blocks until the user answers the dialog, which is why the whole function
+		// runs on its own thread.
+		match request.response() {
+			Ok(response) => println!(
+				"overlay shortcut registered through the XDG portal\n{}",
+				response
+					.shortcuts()
+					.iter()
+					.map(|shortcut| format!(
+						"  {} -> {}",
+						shortcut.id(),
+						shortcut.trigger_description()
+					))
+					.collect::<Vec<_>>()
+					.join("\n")
+			),
+			Err(err) => {
+				eprintln!("the portal rejected the overlay shortcut ({err})");
+				return false;
+			}
+		}
+
+		// Relay activations for the life of the process. Returning here would drop the
+		// stream and, with it, the binding.
+		let mut activated = match shortcuts.receive_activated().await {
+			Ok(stream) => stream,
+			Err(err) => {
+				eprintln!("could not listen for overlay shortcut activations ({err})");
+				return true;
+			}
+		};
+		while let Some(event) = activated.next().await {
+			if event.shortcut_id() == portal_shortcut::OVERLAY_SHORTCUT_ID {
+				if let Err(err) = toggle_overlay(app.clone()) {
+					eprintln!("could not toggle the overlay ({err})");
+				}
+			}
+		}
+		true
+	})
+}
+
 fn create_overlay_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
 	WebviewWindowBuilder::new(app, OVERLAY_WINDOW_LABEL, WebviewUrl::App("overlay".into()))
 		.title("Build Order")
@@ -329,6 +506,13 @@ fn create_overlay_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow>
 		.decorations(false)
 		.always_on_top(true)
 		.skip_taskbar(true)
+		// No window background of its own: the overlay must show the game through it.
+		// WebKitGTK composites a transparent window correctly, but only if nothing paints
+		// an opaque colour behind the page — so the page must also not set a background
+		// (see the overlay route's CSS), and the window must be built transparent.
+		.transparent(true)
+		// GTK draws a 1px border and the compositor a drop shadow regardless of
+		// `decorations(false)`; both would frame the overlay with a visible rectangle.
 		.shadow(false)
 		.visible(false)
 		.build()
@@ -345,7 +529,19 @@ fn create_overlay_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow>
 /// the player uses the game underneath, so there is no state in which intercepting the
 /// mouse would be correct.
 ///
-/// @param window The overlay window to configure.
+/// # The window must already be shown
+///
+/// `set_ignore_cursor_events(true)` panics and aborts the process if the window has not
+/// been realised yet, and **only on Linux**. tao's GTK backend handles every other window
+/// request defensively, but the click-through branch is the single one that unwraps the
+/// underlying `GdkWindow` (`tao-0.37.1/src/platform_impl/linux/event_loop.rs:456`), which
+/// GTK creates when the toplevel is first shown and not before. A window built
+/// `visible(false)` therefore has none, and the unwrap aborts inside the GTK loop where
+/// Rust cannot catch it. Every caller must `show()` first; the requests share one queue
+/// and are handled in order, so that ordering is sufficient. Verified by the first hotkey
+/// press killing the app before the window ever appeared (ADR 0007).
+///
+/// @param window The overlay window to configure, already shown.
 fn apply_overlay_flags(window: &WebviewWindow) -> tauri::Result<()> {
 	window.set_always_on_top(true)?;
 	window.set_ignore_cursor_events(true)?;

@@ -44,6 +44,20 @@ body {
 		sans-serif;
 }
 
+/*
+ * The overlay window is transparent so the game shows through it, and that only works if
+ * the page paints no background of its own: WebKitGTK composites the window transparently
+ * wherever nothing opaque was drawn, so the `background-color` above would fill the overlay
+ * with a solid rectangle and defeat the whole thing.
+ *
+ * Scoped by a class rather than by a route because this stylesheet is global. The overlay
+ * page adds it to `<html>` while it is mounted.
+ */
+html.is-transparent-window,
+html.is-transparent-window body {
+	background-color: transparent;
+}
+
 /* Long lists of build steps are compared column-wise, so digits must not jitter. */
 .tabular {
 	font-variant-numeric: tabular-nums;

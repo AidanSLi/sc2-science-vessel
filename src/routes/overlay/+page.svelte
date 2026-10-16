@@ -63,6 +63,17 @@
 	let usingManual = $state(false);
 
 	/**
+	 * How opaque the panel behind the text is, as a percentage.
+	 *
+	 * The window is transparent and the game shows through, which is what the player asked
+	 * for, but text over a bright or busy part of the map can be hard to read. The default is
+	 * fully transparent on purpose; this exists so the background can be nudged towards a
+	 * light translucent panel without a code change, which was an explicitly anticipated
+	 * follow-up rather than a guess. `0` means no background at all.
+	 */
+	let panelOpacity = $state(0);
+
+	/**
 	 * Picks the clock source from the latest poll.
 	 *
 	 * The game's clock always wins when it is readable, and the manual clock takes over
@@ -176,6 +187,15 @@
 
 	onDestroy(() => clearInterval(timer));
 
+	// The window itself is transparent; the page has to agree, or the global `body`
+	// background would fill the overlay with an opaque rectangle. The class is added to
+	// `<html>` only while this route is mounted so every other route keeps its background.
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		document.documentElement.classList.add('is-transparent-window');
+		return () => document.documentElement.classList.remove('is-transparent-window');
+	});
+
 	/** Moves the manual clock, used only while the client API is unavailable. */
 	function nudge(delta: number) {
 		usingManual = true;
@@ -205,7 +225,10 @@
 
 <svelte:window on:keydown={onKeydown} />
 
-<div class="flex h-full flex-col bg-surface-950/92 text-ink-100">
+<div
+	class="flex h-full flex-col text-ink-100"
+	style="background-color: color-mix(in oklab, var(--color-surface-950) {panelOpacity}%, transparent)"
+>
 	<header class="flex items-center justify-between gap-2 border-b border-surface-800 px-3 py-2">
 		<div class="min-w-0">
 			<h1 class="truncate text-sm font-semibold">{build.title}</h1>
