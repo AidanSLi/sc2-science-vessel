@@ -24,6 +24,15 @@ export interface AppSettings {
 	 * which the overlay treats as "use the first build for the matchup".
 	 */
 	buildPresets: PresetMap;
+	/**
+	 * Whether the app starts hidden and pops up a hint when a game begins.
+	 *
+	 * The resident default. When false the app opens with its window visible, the way an
+	 * ordinary analysis application would.
+	 */
+	startHidden: boolean;
+	/** Whether the app should be launched when the user logs in. */
+	launchAtLogin: boolean;
 }
 
 /** Matchup (or `ZvX` wildcard) to build order id. */
@@ -36,7 +45,9 @@ export const DEFAULT_OVERLAY_SHORTCUT = 'Ctrl+Alt+O';
 const FALLBACK_SETTINGS: AppSettings = {
 	overlayShortcut: DEFAULT_OVERLAY_SHORTCUT,
 	replayRoots: [],
-	buildPresets: {}
+	buildPresets: {},
+	startHidden: true,
+	launchAtLogin: false
 };
 
 /** Outcome of a rebind attempt, so the UI can distinguish success from substitution. */
@@ -63,7 +74,13 @@ export async function loadSettings(): Promise<AppSettings> {
 		return {
 			overlayShortcut: settings.overlayShortcut ?? DEFAULT_OVERLAY_SHORTCUT,
 			replayRoots: settings.replayRoots ?? [],
-			buildPresets: settings.buildPresets ?? {}
+			buildPresets: settings.buildPresets ?? {},
+			// Default-on, so a missing field means true rather than false: a settings file
+			// written before this option existed was written when a hidden start was the only
+			// behaviour the app had, and reading it as "visible" would change how the app
+			// behaves on upgrade.
+			startHidden: settings.startHidden ?? true,
+			launchAtLogin: settings.launchAtLogin ?? false
 		};
 	} catch {
 		return { ...FALLBACK_SETTINGS };
@@ -218,4 +235,41 @@ export function normaliseAccelerator(accelerator: string): string {
 			(MODIFIER_ORDER as readonly string[]).indexOf(b),
 	);
 	return [...mods, ...keys].join('+');
+}
+
+/**
+ * Turns the resident start on or off.
+ *
+ * Enabling it hides the window immediately in the shell, because a setting that says the app
+ * is resident while its window sits on screen would be describing something that is not true.
+ * Disabling it only affects the next launch — the player is looking at the window, and hiding
+ * it in response to a switch they turned off would be perverse.
+ *
+ * @param enabled Whether the app should start hidden.
+ * @returns The stored value.
+ * @throws When the shell is unavailable or refused to write.
+ */
+export async function saveStartHidden(enabled: boolean): Promise<boolean> {
+	if (!isTauri()) {
+		throw new Error('The desktop app is needed to change how it starts.');
+	}
+	const { invoke } = await import('@tauri-apps/api/core');
+	return await invoke<boolean>('set_start_hidden', { enabled });
+}
+
+/**
+ * Turns "launch at login" on or off, writing the desktop's own autostart entry.
+ *
+ * @param enabled Whether to launch the app at login.
+ * @returns The stored value.
+ * @throws When the shell is unavailable, or when the running build is not an installed one —
+ *     an autostart entry pointing at a development binary would break on the next rebuild, so
+ *     the shell refuses rather than writing one.
+ */
+export async function saveLaunchAtLogin(enabled: boolean): Promise<boolean> {
+	if (!isTauri()) {
+		throw new Error('The desktop app is needed to change how it starts.');
+	}
+	const { invoke } = await import('@tauri-apps/api/core');
+	return await invoke<boolean>('set_launch_at_login', { enabled });
 }

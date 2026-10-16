@@ -63,11 +63,30 @@ pub struct Settings {
     /// matchups. An empty map means "no presets configured", which is the first-run state.
     #[serde(default)]
     pub build_presets: std::collections::BTreeMap<String, String>,
+    /// Whether the app starts hidden and shows its popup when a game begins.
+    ///
+    /// On by default, which is the user's stated default: a resident helper that is invisible
+    /// until the game starts. Turning it off leaves the app starting with its window visible,
+    /// which is what someone treating it as an ordinary analysis application would want.
+    #[serde(default = "default_true")]
+    pub start_hidden: bool,
+    /// Whether to launch the app when the user logs in.
+    ///
+    /// Off by default, and deliberately so: writing an autostart entry is a change to the
+    /// user's desktop that they did not ask for unless they ask for it. It only has an effect
+    /// for an installed build — see [`Settings::autostart_available`].
+    #[serde(default)]
+    pub launch_at_login: bool,
 }
 
 /// Returns the default accelerator as an owned string, for serde's `default` attribute.
 fn default_overlay_shortcut() -> String {
     DEFAULT_OVERLAY_SHORTCUT.to_string()
+}
+
+/// Returns `true`, for serde's `default` attribute on opt-out settings.
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -76,6 +95,8 @@ impl Default for Settings {
             overlay_shortcut: default_overlay_shortcut(),
             replay_roots: Vec::new(),
             build_presets: std::collections::BTreeMap::new(),
+            start_hidden: true,
+            launch_at_login: false,
         }
     }
 }
@@ -129,6 +150,23 @@ impl Settings {
         let text = serde_json::to_string_pretty(self)
             .map_err(|err| format!("settings could not be serialised: {err}"))?;
         std::fs::write(&path, text).map_err(|err| format!("{}: {err}", path.display()))
+    }
+
+    /// Whether "launch at login" can do anything useful for the running build.
+    ///
+    /// The autostart entry records **the path of the running executable**, so enabling it from
+    /// a development build writes an entry pointing into `target/debug`. That entry breaks the
+    /// moment the binary is rebuilt or cleaned, and it starts a bare binary rather than an app
+    /// the desktop knows about. The settings page should therefore not offer the switch at all
+    /// for such a build, rather than offering one that quietly produces a broken login entry.
+    ///
+    /// A bundled build shows a reason to believe it is installed: Tauri resolves resources
+    /// from the app's own bundle directory, which does not exist next to a `cargo` binary.
+    ///
+    /// @param app The running app handle.
+    /// @returns `true` when enabling autostart makes sense for this build.
+    pub fn autostart_available(app: &AppHandle) -> bool {
+        app.path().resource_dir().is_ok_and(|dir| dir.exists())
     }
 }
 

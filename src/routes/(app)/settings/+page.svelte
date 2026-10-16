@@ -15,8 +15,10 @@
 		loadPresets,
 		loadSettings,
 		normaliseAccelerator,
+		saveLaunchAtLogin,
 		saveOverlayShortcut,
 		savePresets,
+		saveStartHidden,
 		type PresetMap
 	} from '#lib/settings';
 	import type { BuildOrder, Matchup } from '#lib/types';
@@ -75,6 +77,51 @@
 	/** Message about the last preset change, since a silent save is indistinguishable from a lost one. */
 	let presetMessage = $state<string | null>(null);
 
+	/** Whether the app starts hidden and hints when a game begins. The resident default. */
+	let startHidden = $state(true);
+	/** Whether the app is launched at login. */
+	let launchAtLogin = $state(false);
+	/** Message about the last startup-setting change. */
+	let startupMessage = $state<string | null>(null);
+	let startupError = $state(false);
+
+	/**
+	 * Applies a change to one of the two startup switches and reports the outcome.
+	 *
+	 * Both switches can be refused by the shell — launching at login is refused for a build that
+	 * is not installed, because the entry it would write points at a development binary. The
+	 * value is re-read from the shell after a refusal so the switch cannot be left showing a
+	 * state the shell did not accept.
+	 *
+	 * @param which Which switch changed.
+	 * @param value The requested value.
+	 */
+	async function updateStartup(which: 'startHidden' | 'launchAtLogin', value: boolean) {
+		startupMessage = null;
+		startupError = false;
+		try {
+			if (which === 'startHidden') {
+				startHidden = await saveStartHidden(value);
+				startupMessage = startHidden
+					? 'The app will start hidden and hint when a game begins.'
+					: 'The app will open with its window visible.';
+			} else {
+				launchAtLogin = await saveLaunchAtLogin(value);
+				startupMessage = launchAtLogin
+					? 'The app will start when you log in.'
+					: 'The app will no longer start when you log in.';
+			}
+		} catch (err) {
+			// Reflect reality rather than the request: a refused switch must snap back, or the
+			// page would claim a setting the shell never stored.
+			const settings = await loadSettings();
+			startHidden = settings.startHidden;
+			launchAtLogin = settings.launchAtLogin;
+			startupMessage = err instanceof Error ? err.message : String(err);
+			startupError = true;
+		}
+	}
+
 	/**
 	 * Stores one matchup's preset and reports the result.
 	 *
@@ -109,6 +156,8 @@
 		live = await pollClientApi();
 		const settings = await loadSettings();
 		overlayShortcut = settings.overlayShortcut;
+		startHidden = settings.startHidden;
+		launchAtLogin = settings.launchAtLogin;
 		presets = (await loadPresets()).presets;
 	})();
 
@@ -178,6 +227,49 @@
 
 <section class="space-y-8">
 	<h1 class="text-xl font-semibold">Settings</h1>
+
+	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
+		<h2 class="text-sm font-semibold">Startup</h2>
+		<p class="mt-2 max-w-2xl text-sm text-ink-300">
+			The app is meant to be resident: it can start hidden, stay out of the way, and tell you
+			how to open the overlay the moment a game begins.
+		</p>
+		<label class="mt-3 flex max-w-2xl items-start gap-3 text-sm">
+			<input
+				type="checkbox"
+				class="mt-1"
+				checked={startHidden}
+				onchange={(event) => void updateStartup('startHidden', event.currentTarget.checked)}
+			/>
+			<span>
+				Start hidden
+				<span class="block text-xs text-ink-500">
+					The window stays invisible until you press the toggle key, so finishing a game does
+					not put a window in front of the score screen. A popup appears when a game starts to
+					remind you of the key.
+				</span>
+			</span>
+		</label>
+		<label class="mt-3 flex max-w-2xl items-start gap-3 text-sm">
+			<input
+				type="checkbox"
+				class="mt-1"
+				checked={launchAtLogin}
+				onchange={(event) => void updateStartup('launchAtLogin', event.currentTarget.checked)}
+			/>
+			<span>
+				Launch at login
+				<span class="block text-xs text-ink-500">
+					Starts the app with your desktop session, so it is already running when you begin a
+					game. Needs an installed build; a development build cannot write a login entry that
+					survives its next rebuild.
+				</span>
+			</span>
+		</label>
+		{#if startupMessage}
+			<p class="mt-3 text-xs {startupError ? 'text-amber-400' : 'text-ink-400'}">{startupMessage}</p>
+		{/if}
+	</div>
 
 	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
 		<h2 class="text-sm font-semibold">Game clock (SC2 Client API)</h2>

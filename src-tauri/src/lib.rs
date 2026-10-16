@@ -27,6 +27,8 @@ use tauri::{Emitter, Manager, WebviewWindow};
 
 #[cfg(target_os = "linux")]
 mod portal_shortcut;
+mod game_watch;
+mod notify;
 mod settings;
 mod sidecar;
 pub mod x11_overlay;
@@ -168,6 +170,43 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
 /// @param app The running app handle.
 fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     apply_window_mode(app, window_mode(), Visibility::Shown)
+}
+
+/// Makes a hidden start behave, and keeps a non-hidden start honest.
+///
+/// ## The show is not optional, and is not a bug
+///
+/// The app is resident: it is meant to sit hidden until the player finishes a game and presses
+/// the hotkey. A WebView that has **never been shown** is not equivalent to one that has been
+/// shown and then hidden: Tauri's issue #15652 records a window created with `visible: false`
+/// permanently failing to receive events — `listen()` resolves, the JS never fires, and an
+/// undeliverable `EvaluateScript` is discarded with no log. wry works around the same problem
+/// internally in its GTK backend, calling `show_all()` and then hiding again because "if the
+/// webview starts as hidden, we will need about 3 calls to `webview.set_visible`".
+///
+/// So the window is shown and immediately hidden on every start. On a hidden start that is the
+/// whole point — it is what makes the first real reveal instant instead of a blank frame — and
+/// on a visible start it is a no-op the reveal immediately undoes. Doing it in both cases keeps
+/// one code path, and the cost is a window that may flash for a frame on a visible start.
+///
+/// Order matters: the reveal happens last, so a visible start never ends up hidden by a racing
+/// hide.
+///
+/// @param app The running app handle.
+fn warm_or_reveal_main_window(app: tauri::AppHandle) {
+    let start_hidden = Settings::load(&app).start_hidden;
+    std::thread::spawn(move || {
+        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            return;
+        };
+        // Map it once so the webview is painted and its event delivery is known to work.
+        let _ = window.show();
+        let _ = window.hide();
+
+        if !start_hidden {
+            let _ = window.show();
+        }
+    });
 }
 
 /// Whether putting the window into a mode should also make it visible.
@@ -562,8 +601,17 @@ fn show_main_window(app: &tauri::AppHandle) {
 /// nothing would ever show the window, and the app would look like it had not started at all.
 /// The timer bounds that to "a slow start" instead of "nothing happens".
 ///
+/// **It does not run on a resident start.** A resident app is supposed to be invisible, so a
+/// watchdog that forced the window on screen ten seconds after launch would undo the feature it
+/// is meant to protect. The trade is deliberate: on such a start a frontend that never loads
+/// leaves no visible window, which is correct for the mode the user asked for, and the app can
+/// still be opened with the hotkey or by launching it again.
+///
 /// @param app The running app handle.
 fn arm_main_window_watchdog(app: tauri::AppHandle) {
+    if Settings::load(&app).start_hidden {
+        return;
+    }
     std::thread::spawn(move || {
         std::thread::sleep(MAIN_WINDOW_WATCHDOG);
         show_main_window(&app);
@@ -576,8 +624,15 @@ fn arm_main_window_watchdog(app: tauri::AppHandle) {
 /// command is invoked from the root layout's `onMount`, and a command is the smallest
 /// thing that can cross the IPC boundary from a page that has no Rust-side state to read.
 /// It is also idempotent — the watchdog may have already shown the window.
+///
+/// **A resident start makes this a no-op.** The whole point of `start_hidden` is that the app
+/// sits invisibly until the player asks for it, so a frontend that has painted must not reveal
+/// the window on its own. The player's hotkey is the only thing that may bring it up.
 #[tauri::command]
 fn frontend_ready(app: tauri::AppHandle) {
+    if Settings::load(&app).start_hidden {
+        return;
+    }
     show_main_window(&app);
 }
 
@@ -696,6 +751,130 @@ fn set_build_presets(
     Ok(cleaned)
 }
 
+/// Turns the resident start on or off and persists it.
+///
+/// Turning it **on takes effect immediately**: the window is hidden here, because a setting
+/// that claims the app is resident while the window sits on screen would be lying. Turning it
+/// off only changes what happens at the next launch — the player is looking at the window, and
+/// hiding it in response to a switch they turned *off* would be perverse.
+///
+/// @param app The running app handle.
+/// @param enabled Whether the app should start hidden.
+/// @returns The stored value.
+#[tauri::command]
+fn set_start_hidden(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let mut current = Settings::load(&app);
+    current.start_hidden = enabled;
+    current.save(&app)?;
+    if enabled {
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            let _ = window.hide();
+            OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    Ok(enabled)
+}
+
+/// Turns "launch at login" on or off and persists it, applying it to the desktop now.
+///
+/// Refused for a build where it cannot work — see [`Settings::autostart_available`], whose
+/// reasoning is the reason this returns an error instead of silently writing a login entry
+/// pointing at a `target/debug` binary that the next `cargo` run will replace.
+///
+/// The autostart plugin is the only thing that writes the desktop's autostart entry, so the
+/// stored setting and the desktop are changed together; if the desktop change fails, the
+/// setting is not persisted, or the settings page and the user's login behaviour would
+/// disagree.
+///
+/// @param app The running app handle.
+/// @param enabled Whether to launch the app at login.
+/// @returns The stored value.
+#[tauri::command]
+fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    if !Settings::autostart_available(&app) {
+        return Err(
+            "launch at login needs an installed build; run the app from a bundle or package \
+             rather than from a development binary"
+                .to_string(),
+        );
+    }
+
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|err| err.to_string())?;
+    } else {
+        autolaunch.disable().map_err(|err| err.to_string())?;
+    }
+
+    let mut current = Settings::load(&app);
+    current.launch_at_login = enabled;
+    current.save(&app)?;
+    Ok(enabled)
+}
+
+/// Builds the tray icon, which is how a resident app is reached while its window is hidden.
+///
+/// Four entries, because they are the four things a player does with an app they cannot see:
+/// open the build-order guide, open the analysis window, reach the settings, and quit. Without
+/// a tray icon the app would be running with no visible affordance at all, and the only way to
+/// stop it would be to find it in a task manager — which is not acceptable for something that
+/// starts with the session.
+///
+/// The menu events deliberately reuse the same entry points as the rest of the app rather than
+/// duplicating window logic here, so the tray cannot drift out of step with what the commands
+/// do.
+///
+/// @param app The running app handle.
+/// @returns `Err` with a human-readable reason if the icon could not be created.
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let overlay = MenuItem::with_id(app, "overlay", "Show overlay", true, None::<&str>)?;
+    let analysis = MenuItem::with_id(app, "analysis", "Show analysis", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&overlay, &analysis, &settings, &quit])?;
+
+    TrayIconBuilder::new()
+        // The 32x32 icon is already in the bundle's icon set, so no new asset is needed.
+        .icon(app.default_window_icon().cloned().ok_or_else(|| {
+            tauri::Error::AssetNotFound("the bundle declares no default window icon".into())
+        })?)
+        .menu(&menu)
+        // Left-click opening the menu is the convention on Linux; the appindicator backend
+        // does not deliver left-click events to the app at all.
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "overlay" => {
+                if let Err(err) = apply_window_mode(app, WindowMode::Overlay, Visibility::Shown) {
+                    eprintln!("could not show the overlay from the tray ({err})");
+                }
+            }
+            "analysis" => {
+                if let Err(err) = apply_window_mode(app, WindowMode::Analysis, Visibility::Shown) {
+                    eprintln!("could not show the analysis window from the tray ({err})");
+                }
+            }
+            "settings" => {
+                // Shows the window first: the settings page lives inside it, and the frontend
+                // cannot navigate a window nobody can see.
+                if let Err(err) = apply_window_mode(app, WindowMode::Analysis, Visibility::Shown) {
+                    eprintln!("could not show the window for settings ({err})");
+                } else {
+                    let _ = app.emit("navigate", "settings");
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
 /// Builds and runs the application.
 ///
 /// Registers the plugins the shell needs and wires the global shortcut that toggles the
@@ -707,6 +886,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            // No extra arguments: the app knows it is resident from its own settings, so the
+            // login launch must not need a flag to behave correctly.
+            None,
+        ))
         // Reveals the main window once the frontend has painted (see `reveal_main_window`).
         .invoke_handler(tauri::generate_handler![
             frontend_ready,
@@ -715,6 +901,8 @@ pub fn run() {
             set_window_mode_command,
             get_settings,
             set_overlay_shortcut,
+            set_start_hidden,
+            set_launch_at_login,
             suggest_replay_roots,
             set_replay_roots,
             set_build_presets,
@@ -737,6 +925,23 @@ pub fn run() {
             // falls back to the X11 plugin (see `register_overlay_shortcut`).
             let handle = app.handle().clone();
             std::thread::spawn(move || register_overlay_shortcut(&handle));
+
+            // Warm the hidden webview, and reveal it instead when the app is not meant to
+            // start hidden. See `warm_or_reveal_main_window` for why both halves happen
+            // together and why the show half is not optional.
+            warm_or_reveal_main_window(app.handle().clone());
+
+            // Watch the game so the popup can appear when a match starts. In Rust rather than
+            // the frontend because the window is hidden between games and a hidden WebKitGTK
+            // widget has its page timers suspended — see `game_watch`.
+            game_watch::watch_for_game_start(app.handle().clone());
+
+            // The tray icon, which is how a resident app is reached when its window is hidden.
+            // Without it the app could be running invisibly with no way to quit it short of a
+            // task manager.
+            if let Err(err) = build_tray(app.handle()) {
+                eprintln!("could not create the tray icon ({err})");
+            }
 
             // Development affordance: start in overlay mode so its real compositor placement
             // can be inspected without pressing the hotkey. Reading the stack back from the X
@@ -931,24 +1136,54 @@ fn bind_overlay_shortcut_via_portal(app: &tauri::AppHandle) -> bool {
 
         // This blocks until the user answers the dialog, which is why the whole function
         // runs on its own thread.
-        match request.response() {
-            Ok(response) => println!(
-                "overlay shortcut registered through the XDG portal\n{}",
-                response
+        let bound = match request.response() {
+            Ok(response) => {
+                let bound = response
                     .shortcuts()
                     .iter()
-                    .map(|shortcut| format!(
-                        "  {} -> {}",
-                        shortcut.id(),
-                        shortcut.trigger_description()
-                    ))
+                    .map(|shortcut| {
+                        format!("  {} -> {}", shortcut.id(), shortcut.trigger_description())
+                    })
                     .collect::<Vec<_>>()
-                    .join("\n")
-            ),
+                    .join("\n");
+                // A bound shortcut with an EMPTY trigger means the user dismissed the
+                // compositor's dialog. KDE registers the id anyway, with no key, precisely so
+                // it will not ask again — so this is not a transient state that resolves
+                // itself, and reporting success here would leave the player pressing a dead
+                // key for the life of the install. Confirmed on this machine: the binding
+                // persisted in `~/.config/kglobalshortcutsrc` as
+                // `toggle-overlay=none,none,Show or hide the build order overlay`.
+                let has_trigger = response
+                    .shortcuts()
+                    .iter()
+                    .any(|shortcut| !shortcut.trigger_description().trim().is_empty());
+                println!("overlay shortcut registered through the XDG portal\n{bound}");
+                if !has_trigger {
+                    eprintln!(
+                        "the portal bound no key for the overlay shortcut (the approval dialog \
+                         was probably dismissed); the desktop will not ask again for this id, so \
+                         the X11 fallback is being used instead. To bind it through the portal, \
+                         set a key in System Settings > Shortcuts > Konsole (the portal resolves \
+                         this app's identity from the terminal it was launched from until it is \
+                         installed), then restart the app"
+                    );
+                }
+                has_trigger
+            }
             Err(err) => {
                 eprintln!("the portal rejected the overlay shortcut ({err})");
                 return false;
             }
+        };
+
+        // The binding exists but names no key, which cannot toggle anything. Reached when the
+        // player dismissed the dialog, and handled by returning `false` so the caller tries the
+        // X11 grab rather than leaving the app with no toggle key at all. The session and its
+        // binding are dropped with this function; KDE keeps the keyless id registered, so the
+        // fallback is the only thing that can work until the player sets one in System
+        // Settings.
+        if !bound {
+            return false;
         }
 
         // Relay activations for the life of the process. Returning here would drop the

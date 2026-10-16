@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Offline StarCraft II replay analysis and build-order coach"
 authors = ["AidanSLi"]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.90"
 publish = false
 
 [lib]
@@ -17,7 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
-tauri = { version = "2.12.3", features = [] }
+tauri = { version = "2.12.3", features = ["tray-icon"] }
 # Global shortcuts are X11-only on Linux (tauri-apps/tao#1134, #14913), so this plugin is
 # the fallback path, not the primary one. The Wayland path is the XDG GlobalShortcuts
 # portal, which KDE implements for real (ADR 0008). On Wayland both cannot be active at
@@ -29,6 +29,16 @@ tauri-plugin-shell = "2.5.0"
 # loopback without this, and scoping the permission to loopback is far better than a
 # blanket HTTP capability.
 tauri-plugin-http = "2.8.2"
+# The game-start popup needs CRITICAL urgency to be visible over an active fullscreen game.
+# `tauri-plugin-notification` cannot express urgency at all (it hard-codes the D-Bus timeout
+# and drops every hint but `sound-name`), so notify-rust is used directly for that one call.
+# It is also what the plugin itself uses for its payload types on Linux, so this does not add
+# a second, parallel notification library to the build.
+notify-rust = { version = "4.18", default-features = false, features = ["z"] }
+tauri-plugin-notification = "2.7.0"
+# Writes the desktop's own autostart entry, so "launch at login" works through the mechanism
+# each platform already has rather than an app-specific hack.
+tauri-plugin-autostart = "2.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 
