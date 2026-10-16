@@ -76,6 +76,29 @@ one of:
 Both are user-visible changes to the whole desktop's stacking, which is why neither is the
 **default**.
 
+### The fullscreen claim is settled by pixels, not by layer numbers
+
+Layer numbers are a compositor-internal report; they do not by themselves prove that an image
+reaches the screen. Both halves were therefore measured against a deliberately active fullscreen
+client (`/tmp/fs/activetest.sh`, `/tmp/fs/two.py`), screenshotting the whole screen and counting
+non-backdrop pixels (`/tmp/fs/countpix.py`):
+
+| Configuration | Non-backdrop pixels on a 3840x2160 screen | Overlay visible |
+| --- | --- | --- |
+| Active fullscreen client, no rule | `0` (0%, screen 100% client) | **no** |
+| Active fullscreen client, rule installed | `114000` (1%) | **yes** |
+
+The screenshot for the second row shows the build order drawn over the fullscreen client, so the
+rule is what makes it work rather than an artefact of window ordering.
+
+**The activation detail is the trap, and it invalidates a whole class of naive test.** KWin
+promotes a client to `ActiveLayer` only while it is fullscreen *and active*. A test that starts the
+app after the stand-in game leaves the app holding focus, so the "fullscreen" client silently
+falls back to `NormalLayer` — where ordinary keep-above wins — and the overlay measures as visible
+**with no rule installed at all** (measured: a crop showing the overlay drawn over the red client).
+That result looks like proof of fullscreen support and is the opposite. Any future check must
+activate the fullscreen client after the app is running, or it is measuring windowed behaviour.
+
 ### The rule is case-sensitive in a way that is easy to get wrong
 
 KWin matches a rule's `wmclass` against `Window::resourceClass()` (or, with

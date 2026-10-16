@@ -201,6 +201,17 @@ and there is no extra multiplier to apply.
   `src/lib/client-api.ts` `fetchActiveScreens` returns `null` on failure; `decideMode` returns
   `null` for it and the view is left alone. Collapsing the two would put a build-order guide
   over the player's menus on a transient HTTP failure.
+- **`isActiveFullScreen()` is focus-conditional, so a fullscreen test that does not activate the
+  fullscreen client measures the wrong thing.** KWin promotes a client to `ActiveLayer` only while
+  it is fullscreen **and** active. Starting the app after a stand-in game leaves the app holding
+  focus, the "fullscreen" client drops back to `NormalLayer`, ordinary keep-above wins, and the
+  overlay measures as visible **with no rule installed** — a false positive that reads as proof of
+  fullscreen support. Activate the fullscreen client *after* the app is up (`qdbus6 org.kde.KWin
+  /WindowsRunner org.kde.krunner1.Run <id> ""`), then screenshot and count. Measured on a
+  3840x2160 screen with an active fullscreen client: **0 non-backdrop pixels without the KWin
+  rule, 114000 with it**. Settle stacking claims with pixels (`/tmp/fs/countpix.py`,
+  `/tmp/fs/activetest.sh`), never with a layer number alone — a layer number is a compositor
+  report, not evidence that an image reached the screen.
 - **The automatic mode switch is verified against a scripted client API, not only in unit tests.**
   `/tmp/fs/fakeapi.py` (a throwaway, not in the repo) serves `/ui` and `/game` on port 6119 in a
   scripted sequence — in-game `[]`, then `ScreenScore`, then a second game and score — and the
