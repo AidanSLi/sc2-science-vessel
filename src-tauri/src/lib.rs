@@ -105,7 +105,10 @@ fn set_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result
         "overlay" => WindowMode::Overlay,
         _ => WindowMode::Analysis,
     };
-    apply_window_mode(&app, target)?;
+    // `AsIs`, not `Shown`: this command reports the mode the frontend should render, and
+    // deciding to reveal the window is the hotkey's job. A player who hides the app and then
+    // has the mode change underneath them must not have the window pop back up.
+    apply_window_mode(&app, target, Visibility::AsIs)?;
     Ok(target)
 }
 
@@ -158,15 +161,54 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
 ///
 /// @param app The running app handle.
 fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    apply_window_mode(app, window_mode())
+    apply_window_mode(app, window_mode(), Visibility::Shown)
 }
 
-/// Puts the single window into the given mode.
+/// Whether putting the window into a mode should also make it visible.
+///
+/// This exists because **mode and visibility are independent**, and conflating them is a bug
+/// with a specific symptom: the player hides the app with the hotkey during a game, the game
+/// ends, the automatic mode change fires, and the app jumps back on screen uninvited. The
+/// player asked for it to be gone; only the hotkey may bring it back.
+///
+/// So the two callers differ, deliberately. A hotkey-driven show wants [`Visibility::Shown`],
+/// because the player is asking to see the app and must see it in the right shape. An
+/// automatic mode change wants [`Visibility::AsIs`]: it changes what the window *is*, and
+/// leaves the question of whether it is on screen exactly where the player left it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visibility {
+    /// Leave the window's visibility exactly as it is.
+    AsIs,
+    /// Make the window visible.
+    Shown,
+}
+
+/// Decides whether a mode change should also make the window visible.
+///
+/// A plain function so the rule can be tested without a window, because it is the rule that
+/// was wrong: an earlier version revealed the window on every mode change, so hiding the app
+/// during a game and then finishing the game would pop the window back up over a player who
+/// had asked for it to be gone.
+///
+/// @param visibility What the caller asked for.
+/// @param currently_visible Whether the window is visible right now.
+/// @returns `true` when the window should be shown as part of the change.
+fn should_reveal(visibility: Visibility, currently_visible: bool) -> bool {
+    match visibility {
+        Visibility::Shown => true,
+        Visibility::AsIs => currently_visible,
+    }
+}
+
+/// Puts the single window into the given mode, optionally revealing it.
 ///
 /// Ordering matters and is not arbitrary: in overlay mode the window is made click-through
 /// **after** being shown, because `set_ignore_cursor_events` unwraps the underlying `GdkWindow`
-/// on Linux and that does not exist until the toplevel has been realised (ADR 0007). In
-/// analysis mode the reverse order is what matters — click-through is cleared first, so the
+/// on Linux and that does not exist until the toplevel has been realised (ADR 0007). That is
+/// why [`Visibility::AsIs`] still shows an already-visible window — the call is what keeps a
+/// shown overlay's flags correct — and why the click-through call can never move above it.
+///
+/// In analysis mode the reverse order is what matters: click-through is cleared first, so the
 /// window is never interactive-but-transparent for even a frame.
 ///
 /// The size constraints are set **per mode**, from the one place that knows both sizes. This
@@ -177,10 +219,19 @@ fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 ///
 /// @param app The running app handle.
 /// @param mode The mode to apply.
-fn apply_window_mode(app: &tauri::AppHandle, mode: WindowMode) -> tauri::Result<()> {
+/// @param visibility Whether to reveal the window as part of the change.
+fn apply_window_mode(
+    app: &tauri::AppHandle,
+    mode: WindowMode,
+    visibility: Visibility,
+) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return Ok(());
     };
+
+    // Read once, at the top, before any branch touches the window. Every branch below needs to
+    // know whether to reveal it, and re-reading after a `hide` would answer the wrong question.
+    let should_show = should_reveal(visibility, window.is_visible().unwrap_or(false));
 
     match mode {
         WindowMode::Overlay => {
@@ -200,13 +251,19 @@ fn apply_window_mode(app: &tauri::AppHandle, mode: WindowMode) -> tauri::Result<
             window.set_resizable(false)?;
             window.set_skip_taskbar(true)?;
             window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))?;
-            window.show()?;
+            if should_show {
+                window.show()?;
+            }
             // Anchoring and click-through come after `show` for the reason in the docstring.
             reposition_for_overlay(&window);
             window.set_always_on_top(true)?;
             window.set_ignore_cursor_events(true)?;
+            // Only watch stacking for a visible overlay: the watcher's whole job is to express
+            // "above the game", and a hidden window has nothing to stack.
             #[cfg(target_os = "linux")]
-            watch_overlay_stacking(window.clone());
+            if should_show {
+                watch_overlay_stacking(window.clone());
+            }
         }
         WindowMode::Analysis => {
             // Stop the stacking watcher before anything else: it re-asserts the overlay's
@@ -232,9 +289,19 @@ fn apply_window_mode(app: &tauri::AppHandle, mode: WindowMode) -> tauri::Result<
             window.set_resizable(true)?;
             window.set_skip_taskbar(false)?;
             window.set_size(tauri::LogicalSize::new(ANALYSIS_WIDTH, ANALYSIS_HEIGHT))?;
-            window.center()?;
-            window.show()?;
-            window.set_focus()?;
+            // Only re-centre a window that the player is asking to see. Re-centring one they
+            // had deliberately placed would move it on every automatic scan of client state.
+            if should_show && visibility == Visibility::Shown {
+                window.center()?;
+            }
+            if should_show {
+                window.show()?;
+            }
+            // Only steal focus when the player asked for the window. An automatic mode change
+            // must never pull focus away from a running game.
+            if visibility == Visibility::Shown {
+                window.set_focus()?;
+            }
         }
     }
 
@@ -568,7 +635,10 @@ pub fn run() {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(1500));
-                    if let Err(err) = apply_window_mode(&handle, WindowMode::Overlay) {
+                    // `Shown` because the point of the affordance is to see the overlay.
+                    if let Err(err) =
+                        apply_window_mode(&handle, WindowMode::Overlay, Visibility::Shown)
+                    {
                         eprintln!("could not switch to overlay mode at startup ({err})");
                     }
                 });
@@ -828,3 +898,31 @@ const OVERLAY_WIDTH: f64 = 380.0;
 const OVERLAY_HEIGHT: f64 = 300.0;
 /// Distance from the game window's top-left corner to the overlay's, in logical pixels.
 const OVERLAY_INSET: i32 = 24;
+
+#[cfg(test)]
+mod window_visibility_tests {
+    use super::{should_reveal, Visibility};
+
+    /// A player pressing the hotkey is asking to *see* the app, so the window must be shown
+    /// even though it is currently hidden — this is the whole point of the hotkey.
+    #[test]
+    fn a_hotkey_show_reveals_a_hidden_window() {
+        assert!(should_reveal(Visibility::Shown, false));
+        assert!(should_reveal(Visibility::Shown, true));
+    }
+
+    /// The regression this rule exists to prevent: the game ends while the app is hidden, the
+    /// mode changes automatically, and the window must stay hidden because the player hid it.
+    #[test]
+    fn an_automatic_mode_change_leaves_a_hidden_window_hidden() {
+        assert!(!should_reveal(Visibility::AsIs, false));
+    }
+
+    /// An automatic mode change on an already-visible window must still run the show path:
+    /// that call is what re-establishes the overlay's click-through and stacking flags, which
+    /// do not survive a hide/show cycle.
+    #[test]
+    fn an_automatic_mode_change_keeps_a_visible_window_visible() {
+        assert!(should_reveal(Visibility::AsIs, true));
+    }
+}
