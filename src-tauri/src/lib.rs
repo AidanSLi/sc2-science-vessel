@@ -169,6 +169,12 @@ fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// analysis mode the reverse order is what matters — click-through is cleared first, so the
 /// window is never interactive-but-transparent for even a frame.
 ///
+/// The size constraints are set **per mode**, from the one place that knows both sizes. This
+/// is not fussiness: a minimum is a hard floor the window manager enforces, so leaving the
+/// analysis floor in place while sizing the window down to the 380x300 overlay would have it
+/// clamped straight back to 900 wide, and the overlay would silently be the wrong size. The
+/// constraints therefore have to move with the size, in the same function, or they fight it.
+///
 /// @param app The running app handle.
 /// @param mode The mode to apply.
 fn apply_window_mode(app: &tauri::AppHandle, mode: WindowMode) -> tauri::Result<()> {
@@ -178,12 +184,19 @@ fn apply_window_mode(app: &tauri::AppHandle, mode: WindowMode) -> tauri::Result<
 
     match mode {
         WindowMode::Overlay => {
+            // The overlay is sized programmatically and is not resizable, so it must be free of
+            // the analysis floor before `set_size` is called, or the floor wins.
+            window.set_min_size(None::<tauri::LogicalSize<f64>>)?;
+            window.set_max_size(None::<tauri::LogicalSize<f64>>)?;
             // Clearing click-through first matters when switching *out of* overlay mode and
             // back: the window would otherwise be shown before the flag is cleared and be
             // transparent-but-unclickable for a frame.
             window.set_ignore_cursor_events(false)?;
             window.set_decorations(false)?;
             window.set_shadow(false)?;
+            // Not resizable: the overlay's size is part of its presentation, and a player
+            // dragging its edge mid-game would be resizing a guide they are trying to read.
+            // The size is restored programmatically when the mode is left.
             window.set_resizable(false)?;
             window.set_skip_taskbar(true)?;
             window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))?;
@@ -200,6 +213,18 @@ fn apply_window_mode(app: &tauri::AppHandle, mode: WindowMode) -> tauri::Result<
             // stacking and keep-above state several times a second, and would fight the mode
             // change if it kept running.
             OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            // The interactive floor, applied before the resize so the window cannot be briefly
+            // smaller than the pages it is about to show. The upper bound is a safety net
+            // rather than a design choice: a window taller than the work area cannot be moved
+            // back into view on every desktop, so a stray resize cannot leave the app stuck.
+            window.set_min_size(Some(tauri::LogicalSize::new(
+                ANALYSIS_MIN_WIDTH,
+                ANALYSIS_MIN_HEIGHT,
+            )))?;
+            window.set_max_size(Some(tauri::LogicalSize::new(
+                ANALYSIS_MAX_WIDTH,
+                ANALYSIS_MAX_HEIGHT,
+            )))?;
             window.set_ignore_cursor_events(false)?;
             window.set_always_on_top(false)?;
             window.set_decorations(true)?;
@@ -776,6 +801,26 @@ static OVERLAY_WATCH_RUNNING: std::sync::atomic::AtomicBool =
 const ANALYSIS_WIDTH: f64 = 1280.0;
 /// Window height in analysis mode, in logical pixels.
 const ANALYSIS_HEIGHT: f64 = 820.0;
+
+/// Smallest the analysis window may be dragged to, in logical pixels.
+///
+/// A floor is needed because the analysis pages are dense — a table of build steps, a chart
+/// with axes, a sidebar of metrics — and below roughly this size the layout stops being a
+/// smaller version of itself and starts being unusable. Matches the `minWidth`/`minHeight`
+/// declared in `tauri.conf.json`.
+const ANALYSIS_MIN_WIDTH: f64 = 900.0;
+/// Smallest analysis height, in logical pixels. See [`ANALYSIS_MIN_WIDTH`].
+const ANALYSIS_MIN_HEIGHT: f64 = 600.0;
+
+/// Largest the analysis window may be dragged to, in logical pixels.
+///
+/// Generous rather than restrictive: 4K is the reference machine's resolution and a window
+/// spanning it is a legitimate thing to want. The bound exists only so a corrupt or hostile
+/// resize request cannot produce a window larger than any desktop, which the user could not
+/// drag back into view. Matches `maxWidth`/`maxHeight` in `tauri.conf.json`.
+const ANALYSIS_MAX_WIDTH: f64 = 7680.0;
+/// Largest analysis height, in logical pixels. See [`ANALYSIS_MAX_WIDTH`].
+const ANALYSIS_MAX_HEIGHT: f64 = 4320.0;
 
 /// Default overlay width, in logical pixels.
 const OVERLAY_WIDTH: f64 = 380.0;
