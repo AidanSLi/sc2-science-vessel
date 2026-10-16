@@ -184,7 +184,19 @@ and there is no extra multiplier to apply.
   latter with captured transitions) because **there is no official documentation** — the
   s2client-proto `docs/` folder holds only `linux.md`, `protocol.md` and a PNG. `/game` and
   `/ui` are read together and answer different questions: `/ui` says where the player *is*,
-  `/game` says what the game is *doing*.
+  `/game` says what the game is *doing*. **The transition was later caught on this machine**,
+  in `/tmp/ui-transitions.log` (logged by `/tmp/uisample.sh`, which appends only when the screen
+  string changes): `ScreenLoading/ScreenLoading` at 22:47:41, then at 22:47:44
+  `["ScreenBackgroundSC2…","ScreenNavigationSC2…","ScreenForegroundSC2…","ScreenScore/ScreenScore","ScreenCustom/ScreenCustom"]`,
+  then `Error 404` three seconds later as the client exited. So `ScreenScore` is confirmed
+  against this machine's own build, not only inferred from another project's traces.
+- **A game that ends takes the client API down with it.** After the match the endpoint is
+  reachable for only a few seconds and then answers `Error 404: Not Found` (captured at
+  22:47:49, five seconds after the score screen appeared). The mode switch therefore has to
+  happen on the `ScreenScore` reading and cannot rely on the score screen staying readable — by
+  the time `/ui` answers 404, `live.status` is `unavailable`, `decideMode` returns `null`, and
+  the window keeps whatever mode it had. That is the correct behaviour (nothing should flip on a
+  failed request), but it means the transition must be caught in the seconds while it lasts.
 - **`screens: null` (could not read `/ui`) is NOT the same as `screens: []` (in a game).** In
   `src/lib/client-api.ts` `fetchActiveScreens` returns `null` on failure; `decideMode` returns
   `null` for it and the view is left alone. Collapsing the two would put a build-order guide

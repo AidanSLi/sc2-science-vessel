@@ -33,6 +33,12 @@ pub struct GameWindow {
     pub id: Window,
     /// The window's rectangle in root coordinates.
     pub rect: Rect,
+    /// How confidently the title identifies this as the game; never `0` for a candidate.
+    ///
+    /// Carried out of [`find_game_window_with`] so a caller inspecting a window can tell an
+    /// exact-title match from a prefix one, and so the area tie-break below cannot promote a
+    /// larger window over a better-named one.
+    pub rank: u8,
 }
 
 /// How often the overlay re-checks its position in the stack.
@@ -60,7 +66,40 @@ pub struct Rect {
 /// by `WM_CLASS` because Wine reports the class of the launcher: a StarCraft II started
 /// through Steam or Battle.net appears as `steam_app_default`, so class matching would
 /// either miss the game or match half of Steam's helper windows.
+///
+/// A prefix match alone is too loose, which is why [`game_title_rank`] exists: a file manager
+/// opened on the replays folder is titled `StarCraft II — Dolphin` and is frequently *larger*
+/// than the game, so picking the biggest prefix match anchors the overlay to the file manager.
 const GAME_WINDOW_TITLE_PREFIXES: &[&str] = &["starcraft ii", "starcraft 2"];
+
+/// Titles that can only be the game itself, matched case-insensitively.
+///
+/// Wine gives the window exactly the game's name, so a title that matches one of these exactly
+/// outranks any prefix match no matter how large the other window is. This is what keeps a
+/// Dolphin window called `StarCraft II — Dolphin` from winning on area.
+const GAME_WINDOW_EXACT_TITLES: &[&str] = &["starcraft ii", "starcraft 2"];
+
+/// How well a window title identifies the game — higher is a better candidate.
+///
+/// Separated from the tree walk so the ranking is testable without an X server, because the
+/// ranking is the part that was wrong: an exact title must beat a longer, larger window whose
+/// title merely starts with the game's name.
+///
+/// @param title The window's title.
+/// @returns `2` for an exact game title, `1` for a prefix match, `None` for anything else.
+fn game_title_rank(title: &str) -> Option<u8> {
+    let lower = title.trim().to_ascii_lowercase();
+    if GAME_WINDOW_EXACT_TITLES.contains(&lower.as_str()) {
+        return Some(2);
+    }
+    if GAME_WINDOW_TITLE_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
+        return Some(1);
+    }
+    None
+}
 
 /// Smallest window that can plausibly be the game, in pixels per side.
 ///
@@ -358,13 +397,9 @@ fn find_game_window_with<C: Connection>(conn: &C, screen_num: usize) -> Option<G
         let Some(title) = window_title(conn, window) else {
             continue;
         };
-        let lower = title.to_ascii_lowercase();
-        if !GAME_WINDOW_TITLE_PREFIXES
-            .iter()
-            .any(|prefix| lower.starts_with(prefix))
-        {
+        let Some(rank) = game_title_rank(&title) else {
             continue;
-        }
+        };
         if !is_viewable(conn, window) {
             continue;
         }
@@ -394,17 +429,32 @@ fn find_game_window_with<C: Connection>(conn: &C, screen_num: usize) -> Option<G
                 width: u32::from(geometry.width),
                 height: u32::from(geometry.height),
             },
+            rank,
         };
-        let area = u64::from(candidate.rect.width) * u64::from(candidate.rect.height);
-        let best_area = best
-            .map(|g| u64::from(g.rect.width) * u64::from(g.rect.height))
-            .unwrap_or(0);
-        if area > best_area {
+        // Rank first, area second: a window whose title is exactly the game's name *is* the
+        // game, however small it is next to something that merely starts with the same words.
+        // Area only breaks ties within a rank (Wine occasionally keeps duplicate toplevels).
+        let better = match best {
+            None => true,
+            Some(current) => {
+                rank > current.rank
+                    || (rank == current.rank && area_of(&candidate) > area_of(&current))
+            }
+        };
+        if better {
             best = Some(candidate);
         }
     }
 
     best
+}
+
+/// The area of a candidate, used only to break ties within one title rank.
+///
+/// @param window A candidate game window.
+/// @returns Its area in square pixels.
+fn area_of(window: &GameWindow) -> u64 {
+    u64::from(window.rect.width) * u64::from(window.rect.height)
 }
 
 #[cfg(test)]
@@ -433,5 +483,37 @@ mod tests {
         // Totality again: a Wayland-only session must answer `false` rather than panic, since
         // the watcher consults this on every tick.
         let _ = another_client_is_fullscreen();
+    }
+
+    /// The exact title is the game, and must outrank a prefix match — this is the Dolphin case
+    /// that sent the overlay to the wrong window on the reference machine.
+    #[test]
+    fn an_exact_title_outranks_a_prefix_match() {
+        assert_eq!(game_title_rank("StarCraft II"), Some(2));
+        assert!(game_title_rank("StarCraft II") > game_title_rank("StarCraft II — Dolphin"));
+    }
+
+    /// Wine's own title casing and surrounding whitespace must not change the verdict.
+    #[test]
+    fn title_ranking_ignores_case_and_padding() {
+        assert_eq!(game_title_rank("  sTaRcRaFt 2 "), Some(2));
+        assert_eq!(game_title_rank("STARCRAFT II"), Some(2));
+    }
+
+    /// A window that merely mentions the game is a candidate of last resort, not an equal: it
+    /// is only ever chosen when no exact-titled window exists.
+    #[test]
+    fn a_merely_related_title_is_only_a_fallback() {
+        assert_eq!(game_title_rank("StarCraft II — Dolphin"), Some(1));
+        assert_eq!(game_title_rank("StarCraft II Editor"), Some(1));
+    }
+
+    /// Unrelated windows must never be considered at all, or the overlay would anchor to
+    /// whatever happened to be on screen.
+    #[test]
+    fn unrelated_titles_are_not_candidates() {
+        assert_eq!(game_title_rank("Spotify Premium"), None);
+        assert_eq!(game_title_rank("sc2-science-vessel"), None);
+        assert_eq!(game_title_rank(""), None);
     }
 }
