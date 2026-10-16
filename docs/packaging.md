@@ -83,10 +83,12 @@ appears, and nothing is logged. The cause is a combination of over-bundled
 exports unconditionally.
 
 This was **tested on the reference machine** (Arch, Mesa 26.2.4, glib2 2.90.1 — precisely the
-broken configuration) and the AppImage built from this repository **works**: the WebKit helper
-processes start and the window renders. So AppImage is viable here, but it is the format most
-likely to need attention after a system upgrade, and the first thing to suspect if a user reports
-"it launches but I see nothing" on Arch.
+broken configuration) and the AppImage built from this repository **works**: the AppImage was
+launched, `WebKitWebProcess` and `WebKitNetworkProcess` both came up as its children, the overlay
+window appeared at `304x240` in KWin's `AboveLayer`, and the screen rendered 400,812 distinct
+colours. So AppImage is viable here, but it is the format most likely to need attention after a
+system upgrade, and the first thing to suspect if a user reports "it launches but I see nothing"
+on Arch.
 
 An AUR package would be the properly integrated Arch option; that means writing a `PKGBUILD` by
 hand, since the CLI has no pacman target.
