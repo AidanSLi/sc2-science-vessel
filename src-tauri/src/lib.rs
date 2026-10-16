@@ -16,60 +16,321 @@
 //!   planned upgrade (ADR 0003); it will be a native window beside this one, not a
 //!   WebView trick.
 
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use std::path::Path;
+use tauri::{Emitter, Manager, WebviewWindow};
 
 #[cfg(target_os = "linux")]
 mod portal_shortcut;
 mod settings;
 mod sidecar;
+pub mod x11_overlay;
 
 pub use settings::Settings;
 
-/// Label of the always-on-top build-order overlay window, as declared in `tauri.conf.json`.
-pub const OVERLAY_WINDOW_LABEL: &str = "overlay";
+/// The app's single window, whose role changes between analysis mode and overlay mode.
+///
+/// There is deliberately **one** window. An earlier design used two (a main window plus a
+/// separate always-on-top overlay) and it was wrong for a reason worth recording: two windows
+/// means two things that can be on screen at once, two stacking relationships to negotiate,
+/// and a toggle that has to decide which one it applies to. The player experiences one window
+/// that changes shape, so that is what the code models.
+///
+/// The mode is *owned here*, not by the frontend, because it decides window properties the
+/// frontend cannot set (decorations, click-through, size) and because it must be consistent
+/// with the global hotkey, which arrives from the compositor through Rust without the
+/// frontend being involved.
+pub const MAIN_WINDOW_LABEL: &str = "main";
 
-/// Command the frontend calls to show or hide the overlay window.
+/// Which of its two roles the single window is playing.
 ///
-/// Hides the overlay if it is visible, shows it if it is hidden, and returns the new state.
-///
-/// Toggling a window is not a single Tauri call: a window can be *closed* rather than
-/// hidden, so this recreates it on demand. It also re-applies the click-through and
-/// always-on-top flags on every show, because those flags are lost when a window is
-/// recreated and on some platforms when it is re-shown.
-///
-/// Exposed as a command so the frontend has exactly **one** way to bring the overlay up. It
-/// must not build a `WebviewWindow` itself: the flags that make the overlay usable are
-/// applied here, and a window created from the frontend would look right and then behave
-/// like an ordinary window (see `apply_overlay_flags`).
-///
-/// @param app The running app handle.
-/// @returns `true` if the overlay is now visible.
-#[tauri::command]
-fn toggle_overlay(app: tauri::AppHandle) -> tauri::Result<bool> {
-	if let Some(window) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
-		if window.is_visible().unwrap_or(false) {
-			window.hide()?;
-			return Ok(false);
-		}
-		window.show()?;
-		apply_overlay_flags(&window)?;
-		window.set_focus()?;
-		return Ok(true);
-	}
-
-	let window = create_overlay_window(&app)?;
-	// Show *before* applying the flags, never after: click-through is the one window
-	// request tao's Linux backend does not guard, and it panics on an unrealized window
-	// (see `apply_overlay_flags`). The requests are queued on one channel and handled in
-	// order, so this guarantees realisation happens first.
-	window.show()?;
-	apply_overlay_flags(&window)?;
-	Ok(true)
+/// Serialised to the frontend as the lowercase tag (`"analysis"` / `"overlay"`), which is the
+/// same spelling the `set_window_mode` command accepts, so a mode can be round-tripped through
+/// a command argument without a second vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowMode {
+    /// Ordinary resizable, decorated, interactive window: matches, builds, analysis, settings.
+    Analysis,
+    /// Borderless, transparent, click-through build-order guide pinned over the game.
+    Overlay,
 }
 
-/// Label of the main window declared in `tauri.conf.json`.
-pub const MAIN_WINDOW_LABEL: &str = "main";
+/// The window's current mode.
+///
+/// Process-wide state rather than per-call, because the global hotkey, the game-state watcher
+/// and the frontend's own toggle command all need to agree on it. A plain `Mutex<Option<...>>`
+/// would do; the `AtomicU8` avoids holding a lock across the window calls, which can block on
+/// the compositor.
+static WINDOW_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Reads the window's current mode.
+///
+/// @returns The mode the window is in.
+fn window_mode() -> WindowMode {
+    match WINDOW_MODE.load(std::sync::atomic::Ordering::SeqCst) {
+        1 => WindowMode::Overlay,
+        _ => WindowMode::Analysis,
+    }
+}
+
+/// Records the window's mode.
+///
+/// @param mode The mode the window has just been put into.
+fn set_window_mode(mode: WindowMode) {
+    let raw = match mode {
+        WindowMode::Analysis => 0,
+        WindowMode::Overlay => 1,
+    };
+    WINDOW_MODE.store(raw, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Switches the window between analysis mode and overlay mode.
+///
+/// This is the single choke point for window geometry and window flags. Every caller — the
+/// global hotkey, the frontend's button, the game-state watcher — goes through here, so the
+/// window can never end up borderless-but-clickable or, worse, transparent-but-interactive
+/// over the game.
+///
+/// The flags are re-applied on every mode change rather than only at creation because
+/// `always_on_top` and cursor passthrough are not guaranteed to survive a re-show, and a
+/// click-through overlay that has quietly become clickable is a bug the player would only
+/// notice mid-game.
+///
+/// @param app The running app handle.
+/// @param mode The mode to switch to.
+/// @returns The mode now in effect.
+#[tauri::command]
+fn set_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result<WindowMode> {
+    let target = match mode.as_str() {
+        "overlay" => WindowMode::Overlay,
+        _ => WindowMode::Analysis,
+    };
+    apply_window_mode(&app, target)?;
+    Ok(target)
+}
+
+/// Reads the window's current mode, so the frontend can render the matching view.
+///
+/// The frontend cannot infer this: the hotkey changes the mode without any frontend
+/// involvement, so the mode has to be asked for rather than derived from a local variable.
+///
+/// @returns The mode the window is in.
+#[tauri::command]
+fn get_window_mode() -> WindowMode {
+    window_mode()
+}
+
+/// Shows or hides the app window, leaving its mode alone.
+///
+/// **This is what the global hotkey does.** The hotkey is a visibility control, not a mode
+/// switch: the player presses it to bring the app up quickly after a game, and the app shows
+/// whichever view the game state calls for at that moment. Making the hotkey choose a mode
+/// instead would mean a player mid-game could press it and land on the analysis pages, which
+/// is both useless during a game and a way to lose the build order they were following.
+///
+/// @param app The running app handle.
+/// @returns `true` if the window is now visible.
+#[tauri::command]
+fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(false);
+    };
+
+    if window.is_visible().unwrap_or(false) {
+        window.hide()?;
+        // Stop the stacking watcher while hidden: it exists to keep the overlay above the
+        // game, and a hidden window has nothing to stack. Leaving it running would also keep
+        // an X connection busy and re-assert keep-above on a window nobody can see.
+        OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(false)
+    } else {
+        show_window(&app)?;
+        Ok(true)
+    }
+}
+
+/// Shows the app window, re-applying whatever its current mode needs.
+///
+/// A show is not just `show()`: the flags that make overlay mode usable (click-through, the
+/// stacking watcher) are lost when a window is hidden, and a click-through overlay that has
+/// quietly become clickable is a bug the player would only notice mid-game. Re-applying the
+/// whole mode is the cheapest way to guarantee that cannot happen.
+///
+/// @param app The running app handle.
+fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    apply_window_mode(app, window_mode())
+}
+
+/// Puts the single window into the given mode.
+///
+/// Ordering matters and is not arbitrary: in overlay mode the window is made click-through
+/// **after** being shown, because `set_ignore_cursor_events` unwraps the underlying `GdkWindow`
+/// on Linux and that does not exist until the toplevel has been realised (ADR 0007). In
+/// analysis mode the reverse order is what matters — click-through is cleared first, so the
+/// window is never interactive-but-transparent for even a frame.
+///
+/// @param app The running app handle.
+/// @param mode The mode to apply.
+fn apply_window_mode(app: &tauri::AppHandle, mode: WindowMode) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(());
+    };
+
+    match mode {
+        WindowMode::Overlay => {
+            // Clearing click-through first matters when switching *out of* overlay mode and
+            // back: the window would otherwise be shown before the flag is cleared and be
+            // transparent-but-unclickable for a frame.
+            window.set_ignore_cursor_events(false)?;
+            window.set_decorations(false)?;
+            window.set_shadow(false)?;
+            window.set_resizable(false)?;
+            window.set_skip_taskbar(true)?;
+            window.set_size(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT))?;
+            window.show()?;
+            // Anchoring and click-through come after `show` for the reason in the docstring.
+            reposition_for_overlay(&window);
+            window.set_always_on_top(true)?;
+            window.set_ignore_cursor_events(true)?;
+            #[cfg(target_os = "linux")]
+            watch_overlay_stacking(window.clone());
+        }
+        WindowMode::Analysis => {
+            // Stop the stacking watcher before anything else: it re-asserts the overlay's
+            // stacking and keep-above state several times a second, and would fight the mode
+            // change if it kept running.
+            OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            window.set_ignore_cursor_events(false)?;
+            window.set_always_on_top(false)?;
+            window.set_decorations(true)?;
+            window.set_shadow(true)?;
+            window.set_resizable(true)?;
+            window.set_skip_taskbar(false)?;
+            window.set_size(tauri::LogicalSize::new(ANALYSIS_WIDTH, ANALYSIS_HEIGHT))?;
+            window.center()?;
+            window.show()?;
+            window.set_focus()?;
+        }
+    }
+
+    set_window_mode(mode);
+    // The frontend has to be told, because the mode can change without it: the global hotkey
+    // arrives from the compositor straight into this module. Emitting after the mode is stored
+    // means any listener reading `get_window_mode` immediately still sees the new value.
+    let _ = app.emit(WINDOW_MODE_EVENT, mode);
+    Ok(())
+}
+
+/// Event name the shell emits when the window's mode changes.
+///
+/// A named constant shared with the frontend by convention: the frontend's listen call and
+/// this emit must agree exactly, and a typo would present as a build guide that never appears
+/// after a hotkey press.
+pub const WINDOW_MODE_EVENT: &str = "window-mode";
+
+/// Places the window for overlay mode: over the game's top-left corner, or centred.
+///
+/// A fallback is needed because the player may toggle the overlay before the game has
+/// started, which is the ordinary case rather than an error.
+///
+/// @param window The window to move.
+fn reposition_for_overlay(window: &WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    {
+        let (x, y) = overlay_position(window);
+        if let Err(err) = window.set_position(tauri::LogicalPosition::new(x, y)) {
+            eprintln!("could not move the overlay ({err})");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+    }
+}
+
+/// Keeps the overlay anchored to the game and directly above it, until the thread is told
+/// to stop.
+///
+/// A thread rather than a Tauri interval because the work is a plain X round trip with no
+/// interaction with the app's state, and because the thing it replaces — `_NET_WM_STATE_ABOVE`
+/// — cannot be expressed as a window property at all (see `x11_overlay::anchor_overlay`).
+///
+/// **This is what makes "always above the game, still below anything the player raises over
+/// it" true.** A window in the keep-above state floats over every other window, including
+/// ones the player deliberately brought forward; restacking expresses the narrower
+/// relationship that was actually asked for.
+///
+/// @param window The overlay window.
+/// @param running A flag the caller sets to `false` to stop the watcher; the loop exits
+///   within one poll interval.
+#[cfg(target_os = "linux")]
+fn watch_overlay_stacking(window: WebviewWindow) {
+    use std::sync::atomic::Ordering;
+
+    // A process-wide flag rather than a per-call one: only one watcher may exist, and the
+    // atomic swap in `start_overlay_watcher` is what enforces that. Two watchers would fight
+    // over the same stacking slot several times a second.
+    if OVERLAY_WATCH_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let Some(id) = x11_overlay::window_id(&window) else {
+            // A Wayland-only session has no X ids, so there is nothing to stack against; the
+            // caller has already warned that the overlay cannot stay above the game there.
+            OVERLAY_WATCH_RUNNING.store(false, Ordering::SeqCst);
+            return;
+        };
+
+        while OVERLAY_WATCH_RUNNING.load(Ordering::Relaxed) {
+            if window.is_visible().unwrap_or(false) && x11_overlay::anchor_overlay(id).is_none() {
+                // The game is not running (or has just exited). Stop claiming the keep-above
+                // state so the overlay does not float over unrelated windows while the
+                // player is doing something else; the next mode change re-applies it.
+                let _ = window.set_always_on_top(false);
+            }
+            std::thread::sleep(x11_overlay::STACKING_POLL);
+        }
+    });
+}
+
+/// No-op off Linux, where the game window cannot be located this way.
+///
+/// @param _window The overlay window.
+#[cfg(not(target_os = "linux"))]
+fn reposition_overlay(_window: &WebviewWindow) {}
+
+/// Where to put the overlay, preferring the game window's top-left corner.
+///
+/// Anchoring to the game rather than to the screen matters because the game is not always
+/// where a fixed coordinate assumes: StarCraft II opens at whatever position and size the
+/// player last used, and under Wine that is frequently neither maximised nor at the origin.
+/// An overlay pinned to a fixed screen corner would sit off the game entirely — or, on a
+/// multi-monitor desktop, on the wrong monitor.
+///
+/// Falls back to a fixed position when the game is not found, so the overlay still opens
+/// somewhere predictable rather than not at all.
+///
+/// @param window The overlay window, used to read its own scale factor.
+/// @returns The position to move the overlay to, in logical pixels.
+#[cfg(target_os = "linux")]
+fn overlay_position(window: &WebviewWindow) -> (f64, f64) {
+    if let Some(game) = x11_overlay::find_game_window() {
+        // X11 coordinates are physical pixels while Tauri positions in logical pixels, so on
+        // a scaled display (the reference machine runs 3840x2160 at 200%) an unconverted
+        // offset would place the overlay at twice the intended distance.
+        let scale = window.scale_factor().unwrap_or(1.0);
+        if scale > 0.0 {
+            return (
+                (game.rect.x as f64 + f64::from(OVERLAY_INSET)) / scale,
+                (game.rect.y as f64 + f64::from(OVERLAY_INSET)) / scale,
+            );
+        }
+    }
+
+    (f64::from(OVERLAY_INSET), f64::from(OVERLAY_INSET) + 72.0)
+}
 
 /// How long to wait for the frontend's ready signal before showing the window anyway.
 ///
@@ -82,13 +343,13 @@ const MAIN_WINDOW_WATCHDOG: std::time::Duration = std::time::Duration::from_secs
 ///
 /// @param app The running app handle.
 fn show_main_window(app: &tauri::AppHandle) {
-	if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-		// `is_visible` can error transiently on a window being torn down; showing it again
-		// is harmless, so a failure here is not worth propagating.
-		if !window.is_visible().unwrap_or(false) {
-			let _ = window.show();
-		}
-	}
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        // `is_visible` can error transiently on a window being torn down; showing it again
+        // is harmless, so a failure here is not worth propagating.
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.show();
+        }
+    }
 }
 
 /// Shows the main window if the frontend has not done so within [`MAIN_WINDOW_WATCHDOG`].
@@ -101,10 +362,10 @@ fn show_main_window(app: &tauri::AppHandle) {
 ///
 /// @param app The running app handle.
 fn arm_main_window_watchdog(app: tauri::AppHandle) {
-	std::thread::spawn(move || {
-		std::thread::sleep(MAIN_WINDOW_WATCHDOG);
-		show_main_window(&app);
-	});
+    std::thread::spawn(move || {
+        std::thread::sleep(MAIN_WINDOW_WATCHDOG);
+        show_main_window(&app);
+    });
 }
 
 /// Command the frontend calls once it has painted, to reveal the main window.
@@ -115,7 +376,7 @@ fn arm_main_window_watchdog(app: tauri::AppHandle) {
 /// It is also idempotent — the watchdog may have already shown the window.
 #[tauri::command]
 fn frontend_ready(app: tauri::AppHandle) {
-	show_main_window(&app);
+    show_main_window(&app);
 }
 
 /// Returns the user's settings for the settings page to render.
@@ -129,7 +390,7 @@ fn frontend_ready(app: tauri::AppHandle) {
 /// @returns The current settings.
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Settings {
-	Settings::load(&app)
+    Settings::load(&app)
 }
 
 /// Rebinds the overlay toggle key and persists it.
@@ -145,11 +406,11 @@ fn get_settings(app: tauri::AppHandle) -> Settings {
 /// @returns The registered accelerator, or `Err` with every candidate's failure reason.
 #[tauri::command]
 fn set_overlay_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
-	let registered = settings::register_overlay_shortcut(&app, &shortcut)?;
-	let mut current = Settings::load(&app);
-	current.overlay_shortcut = registered.clone();
-	current.save(&app)?;
-	Ok(registered)
+    let registered = settings::register_overlay_shortcut(&app, &shortcut)?;
+    let mut current = Settings::load(&app);
+    current.overlay_shortcut = registered.clone();
+    current.save(&app)?;
+    Ok(registered)
 }
 
 /// Returns directories that look like replay libraries, so the first run can be one click.
@@ -157,7 +418,7 @@ fn set_overlay_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<Strin
 /// @returns Existing candidate paths, possibly empty.
 #[tauri::command]
 fn suggest_replay_roots() -> Vec<String> {
-	settings::suggest_replay_roots()
+    settings::suggest_replay_roots()
 }
 
 /// Replaces the configured replay roots.
@@ -176,30 +437,30 @@ fn suggest_replay_roots() -> Vec<String> {
 /// @returns The stored list.
 #[tauri::command]
 fn set_replay_roots(app: tauri::AppHandle, roots: Vec<String>) -> Result<Vec<String>, String> {
-	let normalised: Vec<String> = roots
-		.into_iter()
-		.map(|root| root.trim().to_string())
-		.filter(|root| !root.is_empty())
-		.map(|root| {
-			// `canonicalize` also resolves symlinks, which would rewrite a user's carefully
-			// chosen path into something they did not type, so only a relative path is made
-			// absolute. `std::path::absolute` would do this in one call but it needs Rust 1.79
-			// and this crate's MSRV is 1.77.2, so the join is spelled out.
-			let path = Path::new(&root);
-			if path.is_absolute() {
-				root
-			} else {
-				std::env::current_dir()
-					.map(|cwd| cwd.join(path).display().to_string())
-					.unwrap_or(root)
-			}
-		})
-		.collect();
+    let normalised: Vec<String> = roots
+        .into_iter()
+        .map(|root| root.trim().to_string())
+        .filter(|root| !root.is_empty())
+        .map(|root| {
+            // `canonicalize` also resolves symlinks, which would rewrite a user's carefully
+            // chosen path into something they did not type, so only a relative path is made
+            // absolute. `std::path::absolute` would do this in one call but it needs Rust 1.79
+            // and this crate's MSRV is 1.77.2, so the join is spelled out.
+            let path = Path::new(&root);
+            if path.is_absolute() {
+                root
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(path).display().to_string())
+                    .unwrap_or(root)
+            }
+        })
+        .collect();
 
-	let mut current = Settings::load(&app);
-	current.replay_roots = normalised.clone();
-	current.save(&app)?;
-	Ok(normalised)
+    let mut current = Settings::load(&app);
+    current.replay_roots = normalised.clone();
+    current.save(&app)?;
+    Ok(normalised)
 }
 
 /// Sets the build order loaded for each matchup.
@@ -223,14 +484,14 @@ fn set_replay_roots(app: tauri::AppHandle, roots: Vec<String>) -> Result<Vec<Str
 /// The stored map, with empty entries removed.
 #[tauri::command]
 fn set_build_presets(
-	app: tauri::AppHandle,
-	presets: std::collections::BTreeMap<String, String>,
+    app: tauri::AppHandle,
+    presets: std::collections::BTreeMap<String, String>,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
-	let cleaned = settings::clean_presets(presets);
-	let mut current = Settings::load(&app);
-	current.build_presets = cleaned.clone();
-	current.save(&app)?;
-	Ok(cleaned)
+    let cleaned = settings::clean_presets(presets);
+    let mut current = Settings::load(&app);
+    current.build_presets = cleaned.clone();
+    current.save(&app)?;
+    Ok(cleaned)
 }
 
 /// Builds and runs the application.
@@ -241,76 +502,80 @@ fn set_build_presets(
 /// exposes it) rather than a constant, because the right key depends on what else the
 /// player's desktop already binds.
 pub fn run() {
-	tauri::Builder::default()
-		.plugin(tauri_plugin_http::init())
-		.plugin(tauri_plugin_shell::init())
-		// Reveals the main window once the frontend has painted (see `reveal_main_window`).
-		.invoke_handler(tauri::generate_handler![
-			frontend_ready,
-			toggle_overlay,
-			get_settings,
-			set_overlay_shortcut,
-			suggest_replay_roots,
-			set_replay_roots,
-			set_build_presets,
-			// The Python analysis sidecar (ADR 0001). These are the only commands that can be
-			// slow, and the only ones that read a file the app did not write itself.
-			sidecar::list_replays,
-			sidecar::scan_library,
-			sidecar::analyze_replay,
-			sidecar::replay_build_order
-		])
-		// The shortcut is registered from inside `setup` rather than by the builder so a
-		// failure is recoverable. On Wayland registration is expected to fail — the plugin
-		// is X11-only — and an error returned from `setup` would take the whole app down
-		// with it, leaving the player with no window to toggle the overlay from either.
-		.setup(|app| {
-			// Register the toggle key on a background thread, not here. On Wayland the
-			// portal's `BindShortcuts` opens a compositor approval dialog that the user may
-			// take any amount of time to answer, and blocking `setup` would mean the main
-			// window never appeared until they did. The thread tries the portal first and
-			// falls back to the X11 plugin (see `register_overlay_shortcut`).
-			let handle = app.handle().clone();
-			std::thread::spawn(move || register_overlay_shortcut(&handle));
-			arm_main_window_watchdog(app.handle().clone());
-			Ok(())
-		})
-		.plugin(
-			tauri_plugin_global_shortcut::Builder::new()
-				.with_handler(|app, _shortcut, event| {
-					// Act on press only: a handler that also fired on release would toggle
-					// the overlay twice per keystroke and net out to no visible change.
-					if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-						let _ = toggle_overlay(app.clone());
-					}
-				})
-				.build(),
-		)
-		.run(tauri::generate_context!())
-		.expect("error while running sc2-science-vessel");
+    tauri::Builder::default()
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_shell::init())
+        // Reveals the main window once the frontend has painted (see `reveal_main_window`).
+        .invoke_handler(tauri::generate_handler![
+            frontend_ready,
+            toggle_window,
+            get_window_mode,
+            set_window_mode_command,
+            get_settings,
+            set_overlay_shortcut,
+            suggest_replay_roots,
+            set_replay_roots,
+            set_build_presets,
+            // The Python analysis sidecar (ADR 0001). These are the only commands that can be
+            // slow, and the only ones that read a file the app did not write itself.
+            sidecar::list_replays,
+            sidecar::scan_library,
+            sidecar::analyze_replay,
+            sidecar::replay_build_order
+        ])
+        // The shortcut is registered from inside `setup` rather than by the builder so a
+        // failure is recoverable. On Wayland registration is expected to fail — the plugin
+        // is X11-only — and an error returned from `setup` would take the whole app down
+        // with it, leaving the player with no window to toggle the overlay from either.
+        .setup(|app| {
+            // Register the toggle key on a background thread, not here. On Wayland the
+            // portal's `BindShortcuts` opens a compositor approval dialog that the user may
+            // take any amount of time to answer, and blocking `setup` would mean the main
+            // window never appeared until they did. The thread tries the portal first and
+            // falls back to the X11 plugin (see `register_overlay_shortcut`).
+            let handle = app.handle().clone();
+            std::thread::spawn(move || register_overlay_shortcut(&handle));
+
+            // Development affordance: start in overlay mode so its real compositor placement
+            // can be inspected without pressing the hotkey. Reading the stack back from the X
+            // server is the only way to check z-order and position. Not a user-facing setting.
+            if std::env::var_os("SC2SV_START_WITH_OVERLAY").is_some() {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    if let Err(err) = apply_window_mode(&handle, WindowMode::Overlay) {
+                        eprintln!("could not switch to overlay mode at startup ({err})");
+                    }
+                });
+            }
+
+            arm_main_window_watchdog(app.handle().clone());
+            Ok(())
+        })
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // Act on press only: a handler that also fired on release would toggle
+                    // the overlay twice per keystroke and net out to no visible change.
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let _ = toggle_window(app.clone());
+                    }
+                })
+                .build(),
+        )
+        .run(tauri::generate_context!())
+        .expect("error while running sc2-science-vessel");
 }
 
-/// Builds the overlay window, pointing it at the `/overlay` route of the frontend.
+/// Registers the overlay key, preferring the Wayland portal over the X11 grab.
 ///
-/// The overlay is an ordinary borderless always-on-top WebView with click-through
-/// enabled. That works on Windows, X11, and macOS over a window, and on KDE Wayland it
-/// works when the game runs windowed or borderless-fullscreen. It does not reliably cover
-/// a truly fullscreen game on Wayland, because KWin draws an overlay surface above
-/// everything *except* fullscreen windows; the fix is a native `wlr-layer-shell` surface
-/// in the `overlay` layer, which this machine's compositor advertises (ADR 0003).
-///
-/// The frontend route is SPA-routed, so the target is the app's own `overlay` path; with
-/// `adapter-static`'s `index.html` fallback the WebView loads the shell and the client
-/// router resolves `/overlay` from the URL.
-///
-/// @param app The running app handle.
-/// @returns The newly created overlay window.
-/// Registers the overlay toggle key, preferring the Wayland portal over the X11 grab.
+/// The key shows and hides the app window; it does not change the window's mode. See
+/// `toggle_window` for why those are different things.
 ///
 /// The two mechanisms must not both be active. `tauri-plugin-global-shortcut`'s X11 grab
 /// is app-scoped on Wayland, so it still fires while the app itself has focus; if the
-/// portal also held the key, one keypress would toggle the overlay twice and appear to do
-/// nothing. So this tries exactly one of them, portal first.
+/// portal also held the key, one keypress would fire both and appear to do nothing. So this
+/// tries exactly one of them, portal first.
 ///
 /// The portal is preferred because its grabs are compositor-level and therefore keep
 /// working while the game holds focus — the entire point of the key. It is not guaranteed:
@@ -321,17 +586,17 @@ pub fn run() {
 /// @param app The running app handle.
 #[cfg(target_os = "linux")]
 fn register_overlay_shortcut(app: &tauri::AppHandle) {
-	// The portal conversation has to happen off the main thread: `BindShortcuts` waits for
-	// the user to answer the compositor's dialog, which can take arbitrarily long, and the
-	// main thread has a window to show. The X11 fallback is decided *inside* that thread so
-	// it is only taken when the portal actually refused — registering both would make one
-	// keypress toggle the overlay twice.
-	let app = app.clone();
-	std::thread::spawn(move || {
-		if !bind_overlay_shortcut_via_portal(&app) {
-			register_overlay_shortcut_via_x11(&app);
-		}
-	});
+    // The portal conversation has to happen off the main thread: `BindShortcuts` waits for
+    // the user to answer the compositor's dialog, which can take arbitrarily long, and the
+    // main thread has a window to show. The X11 fallback is decided *inside* that thread so
+    // it is only taken when the portal actually refused — registering both would make one
+    // keypress toggle the overlay twice.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if !bind_overlay_shortcut_via_portal(&app) {
+            register_overlay_shortcut_via_x11(&app);
+        }
+    });
 }
 
 /// Registers the overlay key through `tauri-plugin-global-shortcut` on non-Linux platforms.
@@ -342,7 +607,7 @@ fn register_overlay_shortcut(app: &tauri::AppHandle) {
 /// @param app The running app handle.
 #[cfg(not(target_os = "linux"))]
 fn register_overlay_shortcut(app: &tauri::AppHandle) {
-	register_overlay_shortcut_via_x11(app);
+    register_overlay_shortcut_via_x11(app);
 }
 
 /// Registers the overlay key through `tauri-plugin-global-shortcut`.
@@ -353,33 +618,33 @@ fn register_overlay_shortcut(app: &tauri::AppHandle) {
 ///
 /// @param app The running app handle.
 fn register_overlay_shortcut_via_x11(app: &tauri::AppHandle) {
-	let loaded = Settings::load(app);
+    let loaded = Settings::load(app);
 
-	// Register from the stored setting, not a constant, so a rebind survives a restart.
-	// `register_overlay_shortcut` walks a fallback list when the stored key is taken, so a
-	// fresh install still gets a working toggle key.
-	match settings::register_overlay_shortcut(app, &loaded.overlay_shortcut) {
-		Ok(registered) => {
-			if registered != loaded.overlay_shortcut {
-				eprintln!(
-					"overlay shortcut {} was unavailable; registered {registered} instead",
-					loaded.overlay_shortcut
-				);
-				// Persist the substitution so the settings page shows the key that actually
-				// works rather than the one that failed to register.
-				let mut updated = loaded.clone();
-				updated.overlay_shortcut = registered;
-				if let Err(err) = updated.save(app) {
-					eprintln!("could not persist the fallback shortcut ({err})");
-				}
-			}
-		}
-		Err(err) => eprintln!(
-			"no global shortcut could be registered ({err}); \
+    // Register from the stored setting, not a constant, so a rebind survives a restart.
+    // `register_overlay_shortcut` walks a fallback list when the stored key is taken, so a
+    // fresh install still gets a working toggle key.
+    match settings::register_overlay_shortcut(app, &loaded.overlay_shortcut) {
+        Ok(registered) => {
+            if registered != loaded.overlay_shortcut {
+                eprintln!(
+                    "overlay shortcut {} was unavailable; registered {registered} instead",
+                    loaded.overlay_shortcut
+                );
+                // Persist the substitution so the settings page shows the key that actually
+                // works rather than the one that failed to register.
+                let mut updated = loaded.clone();
+                updated.overlay_shortcut = registered;
+                if let Err(err) = updated.save(app) {
+                    eprintln!("could not persist the fallback shortcut ({err})");
+                }
+            }
+        }
+        Err(err) => eprintln!(
+            "no global shortcut could be registered ({err}); \
 			 the overlay can still be toggled from the app window. \
 			 Wayland needs the XDG GlobalShortcuts portal — see docs/adr/0003"
-		),
-	}
+        ),
+    }
 }
 
 /// Binds the overlay toggle key to the XDG `GlobalShortcuts` portal.
@@ -398,152 +663,123 @@ fn register_overlay_shortcut_via_x11(app: &tauri::AppHandle) {
 /// @returns `true` if the portal took the binding and an activation loop is running.
 #[cfg(target_os = "linux")]
 fn bind_overlay_shortcut_via_portal(app: &tauri::AppHandle) -> bool {
-	use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
-	use futures_lite::StreamExt;
+    use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
+    use futures_lite::StreamExt;
 
-	let loaded = Settings::load(app);
-	let trigger = match portal_shortcut::to_portal_trigger(&loaded.overlay_shortcut) {
-		Some(trigger) => trigger,
-		None => {
-			eprintln!(
-			"overlay shortcut {:?} names no key, so the portal cannot bind it",
-			loaded.overlay_shortcut
-			);
-			return false;
-		}
-	};
+    let loaded = Settings::load(app);
+    let trigger = match portal_shortcut::to_portal_trigger(&loaded.overlay_shortcut) {
+        Some(trigger) => trigger,
+        None => {
+            eprintln!(
+                "overlay shortcut {:?} names no key, so the portal cannot bind it",
+                loaded.overlay_shortcut
+            );
+            return false;
+        }
+    };
 
-	portal_shortcut::block_on(async move {
-		let shortcuts = match GlobalShortcuts::new().await {
-			Ok(shortcuts) => shortcuts,
-			Err(err) => {
-				eprintln!("global shortcut portal unavailable ({err})");
-				return false;
-			}
-		};
+    portal_shortcut::block_on(async move {
+        let shortcuts = match GlobalShortcuts::new().await {
+            Ok(shortcuts) => shortcuts,
+            Err(err) => {
+                eprintln!("global shortcut portal unavailable ({err})");
+                return false;
+            }
+        };
 
-		// `CreateSessionOptions::default()` fills in the two tokens the portal requires.
-		// Omitting them is not a soft failure: xdg-desktop-portal 1.22.1 aborts on an
-		// assertion when `CreateSession` is called without them.
-		let session = match shortcuts.create_session(Default::default()).await {
-			Ok(session) => session,
-			Err(err) => {
-				eprintln!(
-					"global shortcut portal declined a session ({err}); \
+        // `CreateSessionOptions::default()` fills in the two tokens the portal requires.
+        // Omitting them is not a soft failure: xdg-desktop-portal 1.22.1 aborts on an
+        // assertion when `CreateSession` is called without them.
+        let session = match shortcuts.create_session(Default::default()).await {
+            Ok(session) => session,
+            Err(err) => {
+                eprintln!(
+                    "global shortcut portal declined a session ({err}); \
 					 falling back to the X11 shortcut plugin"
-				);
-				return false;
-			}
-		};
+                );
+                return false;
+            }
+        };
 
-		let shortcut = NewShortcut::new(
-			portal_shortcut::OVERLAY_SHORTCUT_ID,
-			portal_shortcut::OVERLAY_SHORTCUT_DESCRIPTION,
-		)
-		.preferred_trigger(trigger.as_str());
+        let shortcut = NewShortcut::new(
+            portal_shortcut::OVERLAY_SHORTCUT_ID,
+            portal_shortcut::OVERLAY_SHORTCUT_DESCRIPTION,
+        )
+        .preferred_trigger(trigger.as_str());
 
-		// Opens the compositor's approval dialog. The user may decline, in which case the
-		// portal still records the binding with no key so it does not ask again.
-		let request = match shortcuts
-			.bind_shortcuts(&session, &[shortcut], None, Default::default())
-			.await
-		{
-			Ok(request) => request,
-			Err(err) => {
-				eprintln!("could not bind the overlay shortcut via the portal ({err})");
-				return false;
-			}
-		};
+        // Opens the compositor's approval dialog. The user may decline, in which case the
+        // portal still records the binding with no key so it does not ask again.
+        let request = match shortcuts
+            .bind_shortcuts(&session, &[shortcut], None, Default::default())
+            .await
+        {
+            Ok(request) => request,
+            Err(err) => {
+                eprintln!("could not bind the overlay shortcut via the portal ({err})");
+                return false;
+            }
+        };
 
-		// This blocks until the user answers the dialog, which is why the whole function
-		// runs on its own thread.
-		match request.response() {
-			Ok(response) => println!(
-				"overlay shortcut registered through the XDG portal\n{}",
-				response
-					.shortcuts()
-					.iter()
-					.map(|shortcut| format!(
-						"  {} -> {}",
-						shortcut.id(),
-						shortcut.trigger_description()
-					))
-					.collect::<Vec<_>>()
-					.join("\n")
-			),
-			Err(err) => {
-				eprintln!("the portal rejected the overlay shortcut ({err})");
-				return false;
-			}
-		}
+        // This blocks until the user answers the dialog, which is why the whole function
+        // runs on its own thread.
+        match request.response() {
+            Ok(response) => println!(
+                "overlay shortcut registered through the XDG portal\n{}",
+                response
+                    .shortcuts()
+                    .iter()
+                    .map(|shortcut| format!(
+                        "  {} -> {}",
+                        shortcut.id(),
+                        shortcut.trigger_description()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            Err(err) => {
+                eprintln!("the portal rejected the overlay shortcut ({err})");
+                return false;
+            }
+        }
 
-		// Relay activations for the life of the process. Returning here would drop the
-		// stream and, with it, the binding.
-		let mut activated = match shortcuts.receive_activated().await {
-			Ok(stream) => stream,
-			Err(err) => {
-				eprintln!("could not listen for overlay shortcut activations ({err})");
-				return true;
-			}
-		};
-		while let Some(event) = activated.next().await {
-			if event.shortcut_id() == portal_shortcut::OVERLAY_SHORTCUT_ID {
-				if let Err(err) = toggle_overlay(app.clone()) {
-					eprintln!("could not toggle the overlay ({err})");
-				}
-			}
-		}
-		true
-	})
+        // Relay activations for the life of the process. Returning here would drop the
+        // stream and, with it, the binding.
+        let mut activated = match shortcuts.receive_activated().await {
+            Ok(stream) => stream,
+            Err(err) => {
+                eprintln!("could not listen for overlay shortcut activations ({err})");
+                return true;
+            }
+        };
+        while let Some(event) = activated.next().await {
+            if event.shortcut_id() == portal_shortcut::OVERLAY_SHORTCUT_ID {
+                if let Err(err) = toggle_window(app.clone()) {
+                    eprintln!("could not toggle the window ({err})");
+                }
+            }
+        }
+        true
+    })
 }
 
-fn create_overlay_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
-	WebviewWindowBuilder::new(app, OVERLAY_WINDOW_LABEL, WebviewUrl::App("overlay".into()))
-		.title("Build Order")
-		.inner_size(380.0, 300.0)
-		.position(24.0, 96.0)
-		.resizable(true)
-		.decorations(false)
-		.always_on_top(true)
-		.skip_taskbar(true)
-		// No window background of its own: the overlay must show the game through it.
-		// WebKitGTK composites a transparent window correctly, but only if nothing paints
-		// an opaque colour behind the page — so the page must also not set a background
-		// (see the overlay route's CSS), and the window must be built transparent.
-		.transparent(true)
-		// GTK draws a 1px border and the compositor a drop shadow regardless of
-		// `decorations(false)`; both would frame the overlay with a visible rectangle.
-		.shadow(false)
-		.visible(false)
-		.build()
-}
+/// Whether the stacking watcher thread is alive.
+///
+/// Only meaningful on Linux; declared unconditionally so the flag's lifetime is obvious and
+/// there is one place to look for who owns the watcher.
+static OVERLAY_WATCH_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-/// Applies the window flags that make the overlay usable while playing.
+/// Window size in analysis mode, in logical pixels.
 ///
-/// These are re-applied every time the window is shown, not only at creation, because
-/// `always_on_top` and cursor-event passthrough are not guaranteed to survive a hide/show
-/// cycle — and a click-through overlay that has quietly become clickable is a bug the
-/// player would only notice mid-game.
-///
-/// Click-through is unconditional on purpose: the overlay exists to sit on screen while
-/// the player uses the game underneath, so there is no state in which intercepting the
-/// mouse would be correct.
-///
-/// # The window must already be shown
-///
-/// `set_ignore_cursor_events(true)` panics and aborts the process if the window has not
-/// been realised yet, and **only on Linux**. tao's GTK backend handles every other window
-/// request defensively, but the click-through branch is the single one that unwraps the
-/// underlying `GdkWindow` (`tao-0.37.1/src/platform_impl/linux/event_loop.rs:456`), which
-/// GTK creates when the toplevel is first shown and not before. A window built
-/// `visible(false)` therefore has none, and the unwrap aborts inside the GTK loop where
-/// Rust cannot catch it. Every caller must `show()` first; the requests share one queue
-/// and are handled in order, so that ordering is sufficient. Verified by the first hotkey
-/// press killing the app before the window ever appeared (ADR 0007).
-///
-/// @param window The overlay window to configure, already shown.
-fn apply_overlay_flags(window: &WebviewWindow) -> tauri::Result<()> {
-	window.set_always_on_top(true)?;
-	window.set_ignore_cursor_events(true)?;
-	Ok(())
-}
+/// Restored on every switch back, because the window was resized to overlay dimensions and a
+/// player returning from a game should get the window they left, not a 380x300 stub.
+const ANALYSIS_WIDTH: f64 = 1280.0;
+/// Window height in analysis mode, in logical pixels.
+const ANALYSIS_HEIGHT: f64 = 820.0;
+
+/// Default overlay width, in logical pixels.
+const OVERLAY_WIDTH: f64 = 380.0;
+/// Default overlay height, in logical pixels.
+const OVERLAY_HEIGHT: f64 = 300.0;
+/// Distance from the game window's top-left corner to the overlay's, in logical pixels.
+const OVERLAY_INSET: i32 = 24;

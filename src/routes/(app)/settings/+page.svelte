@@ -53,7 +53,13 @@
 		buildsByMatchup[matchup] = exactMatchupBuilds(matchup);
 	}
 
-	let live = $state<LiveState>({ status: 'idle', game: null, lastOkAt: null, detail: null });
+	let live = $state<LiveState>({
+		status: 'idle',
+		game: null,
+		screens: null,
+		lastOkAt: null,
+		detail: null
+	});
 	let busy = $state(false);
 
 	/** The overlay toggle key as registered by the shell, not as requested. */

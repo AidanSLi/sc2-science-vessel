@@ -58,59 +58,63 @@ pub const OVERLAY_SHORTCUT_DESCRIPTION: &str = "Show or hide the build order ove
 /// @param accelerator A Tauri accelerator such as `Ctrl+Alt+O`.
 /// @returns The XDG trigger string, or `None` if `accelerator` names no bindable key.
 pub fn to_portal_trigger(accelerator: &str) -> Option<String> {
-	/// Modifier spellings this app accepts, mapped to their XDG trigger form.
-	const MODIFIERS: &[(&str, &str)] = &[
-		("ctrl", "<Ctrl>"),
-		("control", "<Ctrl>"),
-		("alt", "<Alt>"),
-		("shift", "<Shift>"),
-		("super", "<Super>"),
-		("cmd", "<Super>"),
-		("command", "<Super>"),
-		("meta", "<Super>"),
-	];
+    /// Modifier spellings this app accepts, mapped to their XDG trigger form.
+    const MODIFIERS: &[(&str, &str)] = &[
+        ("ctrl", "<Ctrl>"),
+        ("control", "<Ctrl>"),
+        ("alt", "<Alt>"),
+        ("shift", "<Shift>"),
+        ("super", "<Super>"),
+        ("cmd", "<Super>"),
+        ("command", "<Super>"),
+        ("meta", "<Super>"),
+    ];
 
-	let trimmed = accelerator.trim();
+    let trimmed = accelerator.trim();
 
-	// Split the trailing key off first. A trailing `+` is the plus key itself, so `Ctrl++`
-	// must not be split on that final character or it yields an empty key and the literal
-	// string `Ctrl` — which is what a naive split-then-pop does.
-	let (modifier_text, key) = match trimmed.strip_suffix('+') {
-		Some(head) => (head, "+"),
-		None => match trimmed.rsplit_once('+') {
-			Some((head, key)) => (head, key.trim()),
-			// No separator at all: a bare key such as `F9`, with no modifiers.
-			None => ("", trimmed),
-		},
-	};
+    // Split the trailing key off first. A trailing `+` is the plus key itself, so `Ctrl++`
+    // must not be split on that final character or it yields an empty key and the literal
+    // string `Ctrl` — which is what a naive split-then-pop does.
+    let (modifier_text, key) = match trimmed.strip_suffix('+') {
+        Some(head) => (head, "+"),
+        None => match trimmed.rsplit_once('+') {
+            Some((head, key)) => (head, key.trim()),
+            // No separator at all: a bare key such as `F9`, with no modifiers.
+            None => ("", trimmed),
+        },
+    };
 
-	let mut trigger = String::new();
-	for token in modifier_text.split('+').map(str::trim).filter(|t| !t.is_empty()) {
-		let lower = token.to_ascii_lowercase();
-		match MODIFIERS.iter().find(|(name, _)| *name == lower) {
-			Some((_, trigger_form)) => trigger.push_str(trigger_form),
-			None => return None,
-		}
-	}
+    let mut trigger = String::new();
+    for token in modifier_text
+        .split('+')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        let lower = token.to_ascii_lowercase();
+        match MODIFIERS.iter().find(|(name, _)| *name == lower) {
+            Some((_, trigger_form)) => trigger.push_str(trigger_form),
+            None => return None,
+        }
+    }
 
-	// An empty key means the accelerator was either empty or ended in a separator, and a
-	// key spelled like a modifier means it was modifiers only. Neither is pressable.
-	if key.is_empty()
-		|| MODIFIERS
-			.iter()
-			.any(|(name, _)| *name == key.to_ascii_lowercase())
-	{
-		return None;
-	}
+    // An empty key means the accelerator was either empty or ended in a separator, and a
+    // key spelled like a modifier means it was modifiers only. Neither is pressable.
+    if key.is_empty()
+        || MODIFIERS
+            .iter()
+            .any(|(name, _)| *name == key.to_ascii_lowercase())
+    {
+        return None;
+    }
 
-	// Single characters are lowercased and multi-character names keep their case; `+` is
-	// spelled out because a second `+` would read as another separator.
-	trigger.push_str(&match key {
-		"+" => "plus".to_string(),
-		_ if key.chars().count() == 1 => key.to_ascii_lowercase(),
-		_ => key.to_string(),
-	});
-	Some(trigger)
+    // Single characters are lowercased and multi-character names keep their case; `+` is
+    // spelled out because a second `+` would read as another separator.
+    trigger.push_str(&match key {
+        "+" => "plus".to_string(),
+        _ if key.chars().count() == 1 => key.to_ascii_lowercase(),
+        _ => key.to_string(),
+    });
+    Some(trigger)
 }
 
 /// Runs an async body to completion on the calling thread.
@@ -121,44 +125,53 @@ pub fn to_portal_trigger(accelerator: &str) -> Option<String> {
 /// @param future The future to drive.
 /// @returns Whatever the future resolves to.
 pub fn block_on<F: Future>(future: F) -> F::Output {
-	futures_lite::future::block_on(future)
+    futures_lite::future::block_on(future)
 }
 
 #[cfg(test)]
 mod tests {
-	use super::to_portal_trigger;
+    use super::to_portal_trigger;
 
-	#[test]
-	fn lowercases_single_character_keys_and_wraps_modifiers() {
-		assert_eq!(to_portal_trigger("Ctrl+Alt+O").as_deref(), Some("<Ctrl><Alt>o"));
-		assert_eq!(to_portal_trigger("Ctrl+Shift+F9").as_deref(), Some("<Ctrl><Shift>F9"));
-		assert_eq!(to_portal_trigger("Alt+Space").as_deref(), Some("<Alt>Space"));
-		assert_eq!(to_portal_trigger("Super+Z").as_deref(), Some("<Super>z"));
-	}
+    #[test]
+    fn lowercases_single_character_keys_and_wraps_modifiers() {
+        assert_eq!(
+            to_portal_trigger("Ctrl+Alt+O").as_deref(),
+            Some("<Ctrl><Alt>o")
+        );
+        assert_eq!(
+            to_portal_trigger("Ctrl+Shift+F9").as_deref(),
+            Some("<Ctrl><Shift>F9")
+        );
+        assert_eq!(
+            to_portal_trigger("Alt+Space").as_deref(),
+            Some("<Alt>Space")
+        );
+        assert_eq!(to_portal_trigger("Super+Z").as_deref(), Some("<Super>z"));
+    }
 
-	#[test]
-	fn spells_out_the_plus_key() {
-		assert_eq!(to_portal_trigger("Ctrl++").as_deref(), Some("<Ctrl>plus"));
-	}
+    #[test]
+    fn spells_out_the_plus_key() {
+        assert_eq!(to_portal_trigger("Ctrl++").as_deref(), Some("<Ctrl>plus"));
+    }
 
-	#[test]
-	fn accepts_a_bare_key_with_no_modifiers() {
-		assert_eq!(to_portal_trigger("F9").as_deref(), Some("F9"));
-	}
+    #[test]
+    fn accepts_a_bare_key_with_no_modifiers() {
+        assert_eq!(to_portal_trigger("F9").as_deref(), Some("F9"));
+    }
 
-	#[test]
-	fn lowercases_a_lone_single_character_key() {
-		assert_eq!(to_portal_trigger("O").as_deref(), Some("o"));
-	}
+    #[test]
+    fn lowercases_a_lone_single_character_key() {
+        assert_eq!(to_portal_trigger("O").as_deref(), Some("o"));
+    }
 
-	#[test]
-	fn rejects_an_accelerator_with_no_key() {
-		assert_eq!(to_portal_trigger("Ctrl+Alt"), None);
-		assert_eq!(to_portal_trigger(""), None);
-	}
+    #[test]
+    fn rejects_an_accelerator_with_no_key() {
+        assert_eq!(to_portal_trigger("Ctrl+Alt"), None);
+        assert_eq!(to_portal_trigger(""), None);
+    }
 
-	#[test]
-	fn rejects_an_unrecognised_modifier_rather_than_binding_a_different_key() {
-		assert_eq!(to_portal_trigger("Hype+O"), None);
-	}
+    #[test]
+    fn rejects_an_unrecognised_modifier_rather_than_binding_a_different_key() {
+        assert_eq!(to_portal_trigger("Hype+O"), None);
+    }
 }

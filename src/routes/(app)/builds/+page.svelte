@@ -1,15 +1,21 @@
 <script lang="ts">
 	/**
-	 * Build-order library and the launcher for the overlay.
+	 * Build-order library and the way into the build-order view.
 	 *
-	 * The one sample build is shown with its steps so the overlay has something honest to
-	 * follow. Importing builds (SpawningTool snapshot, SALT strings) is Phase 4 and the UI
-	 * says so rather than offering dead controls.
+	 * The app is a single window with two roles (see `#lib/window-mode`), so there is no
+	 * separate overlay window to launch from here. What this page offers instead is the manual
+	 * switch: it puts the one window into build-guide shape so the guide can be previewed, or
+	 * checked on a machine where the automatic switch has nothing to read.
+	 *
+	 * The one sample build is shown with its steps so the guide has something honest to follow.
+	 * Importing builds (SpawningTool snapshot, SALT strings) is Phase 4 and the UI says so
+	 * rather than offering dead controls.
 	 */
 	import { onMount } from 'svelte';
 	import { advance } from '#lib/builds';
 	import { buildsForMatchup, bundledSnapshotDate, bundledSnapshotSource } from '#lib/build-library';
 	import { formatGameTime } from '#lib/clock';
+	import { isTauri } from '#lib/client-api';
 	import { DEFAULT_OVERLAY_SHORTCUT, loadSettings } from '#lib/settings';
 	import { sampleBuildOrder } from '#lib/sample-build';
 	import type { BuildOrder } from '#lib/types';
@@ -44,31 +50,34 @@
 	 */
 	let overlayShortcut = $state(DEFAULT_OVERLAY_SHORTCUT);
 
-	/** The overlay is a separate window; this is the in-app way to open it. */
+	/**
+	 * Feedback from the manual switch, so the button is never a silent no-op.
+	 *
+	 * There is no matching "leave the guide" button anywhere, and that is deliberate: the guide
+	 * is click-through by design, so a button inside it could never be clicked. Escape returns
+	 * from the guide (see `BuildOrderGuide`), and during a game the automatic switch does it
+	 * when the game ends.
+	 */
 	let overlayMessage = $state<string | null>(null);
 
 	/**
-	 * Opens the build-order overlay window through the Rust command.
+	 * Switches the one window into build-guide shape.
 	 *
-	 * This deliberately delegates to `toggle_overlay` rather than constructing a
-	 * `WebviewWindow` here. The overlay's whole behaviour is in how the window is
-	 * *configured* — borderless, always-on-top, click-through, out of the taskbar — and the
-	 * Rust side re-applies those flags on every show, partly because they do not reliably
-	 * survive a hide/show cycle. A window built from the frontend with
-	 * `new WebviewWindow('overlay', …)` looks right for a moment and then behaves like an
-	 * ordinary window, which the player would only find out mid-game when the overlay started
-	 * eating their mouse clicks. One construction path also means one place to change when
-	 * the overlay becomes a native layer-shell surface (ADR 0003).
+	 * This delegates to the shell rather than resizing anything here, because the guide's whole
+	 * behaviour is in how the *window* is configured — borderless, always-on-top, click-through,
+	 * out of the taskbar — and the shell re-applies all of it. Resizing from the frontend would
+	 * produce a small window that still had its title bar and still ate the mouse, which is the
+	 * bug the previous two-window design had.
 	 *
-	 * Failure is expected in a browser tab (there is no desktop shell there), so the message
-	 * distinguishes "no desktop shell" from a real error.
+	 * Failure is expected in a browser tab (there is no shell there), so the message says the
+	 * desktop app is needed rather than surfacing a raw error.
 	 */
-	async function openOverlay() {
+	async function enterGuideMode() {
 		overlayMessage = null;
 		try {
-			const { invoke } = await import('@tauri-apps/api/core');
-			await invoke('toggle_overlay');
-			overlayMessage = `Overlay shown. ${overlayShortcut} toggles it.`;
+			const { setWindowMode } = await import('#lib/window-mode');
+			await setWindowMode('overlay');
+			overlayMessage = `Build guide shown. ${overlayShortcut} hides and shows the app.`;
 		} catch (err) {
 			overlayMessage = `Needs the desktop app: ${
 				err instanceof Error ? err.message : String(err)
@@ -107,9 +116,10 @@
 		<button
 			type="button"
 			class="rounded bg-surface-800 px-3 py-1.5 text-sm text-ink-300 hover:bg-surface-700"
-			onclick={openOverlay}
+			disabled={!isTauri()}
+			onclick={enterGuideMode}
 		>
-			Open overlay
+			Preview build guide
 		</button>
 	</div>
 

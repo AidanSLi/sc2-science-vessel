@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Build-order guide overlay.
+	 * The build-order guide: what the app's window shows while a game is being played.
 	 *
 	 * Deliberately the dullest possible thing: a notepad. It shows the predetermined
 	 * steps and where the game clock has reached in them, and it does nothing else. It
@@ -17,6 +17,10 @@
 	 * races is not reacting to anything: they are fixed before the game starts, they never
 	 * change, and the guide itself is a fixed list either way. It is the equivalent of the
 	 * player having opened the right page in a notebook beforehand.
+	 *
+	 * This is a component rather than a route because the app has **one window with two
+	 * modes** (see `#lib/window-mode`), not two windows. The window's shape changes between
+	 * a normal analysis window and this click-through panel; the view is swapped inside it.
 	 */
 	import { onDestroy } from 'svelte';
 	import { advance } from '#lib/builds';
@@ -24,6 +28,7 @@
 	import { formatGameTime, matchupOf } from '#lib/clock';
 	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
 	import { loadPresets } from '#lib/settings';
+	import { setWindowMode } from '#lib/window-mode';
 	import { sampleBuildOrder } from '#lib/sample-build';
 	import type { BuildMatchup, BuildOrder, Matchup } from '#lib/types';
 
@@ -51,6 +56,7 @@
 	let live = $state<LiveState>({
 		status: 'idle',
 		game: null,
+		screens: null,
 		lastOkAt: null,
 		detail: null
 	});
@@ -187,9 +193,9 @@
 
 	onDestroy(() => clearInterval(timer));
 
-	// The window itself is transparent; the page has to agree, or the global `body`
-	// background would fill the overlay with an opaque rectangle. The class is added to
-	// `<html>` only while this route is mounted so every other route keeps its background.
+	// The window itself is transparent while in overlay mode; the page has to agree, or the
+	// global `body` background would fill it with an opaque rectangle. The class goes on
+	// `<html>` only while this component is mounted, so the analysis view keeps its background.
 	$effect(() => {
 		if (typeof document === 'undefined') return;
 		document.documentElement.classList.add('is-transparent-window');
@@ -203,8 +209,13 @@
 	}
 
 	/**
-	 * Space nudges the manual clock, and Tab resets it. Bound on the window because the
-	 * overlay is click-through: the player cannot click it, so keyboard is the only reach.
+	 * Space nudges the manual clock, Tab resets it, and Escape leaves the guide.
+	 *
+	 * Bound on the window because the guide is click-through in this mode: the player cannot
+	 * click it, so the keyboard is the only reach. Escape is not a nicety — it is the *only* way
+	 * out of the guide while it is click-through, since the rest of the app is unreachable from
+	 * here. The +/- buttons remain for the case where the window is not click-through, which is
+	 * what happens on a compositor that refuses the flag.
 	 *
 	 * @param event The keydown event.
 	 */
@@ -216,6 +227,13 @@
 			event.preventDefault();
 			usingManual = true;
 			manualClock = 0;
+		} else if (event.key === 'Escape') {
+			event.preventDefault();
+			// Deliberately does not hide the app: it returns to the analysis view. Hiding is the
+			// hotkey's job, and a player escaping the guide usually wants to look at the app, not
+			// to make it vanish. The automatic switch will put the guide back if a game is still
+			// running, which is the correct outcome — the guide is the right view during a game.
+			void setWindowMode('analysis');
 		}
 	}
 

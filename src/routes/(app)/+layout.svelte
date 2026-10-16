@@ -12,7 +12,13 @@
 
 	let { children } = $props();
 
-	let live = $state<LiveState>({ status: 'idle', game: null, lastOkAt: null, detail: null });
+	let live = $state<LiveState>({
+		status: 'idle',
+		game: null,
+		screens: null,
+		lastOkAt: null,
+		detail: null
+	});
 
 	const timer = setInterval(async () => {
 		live = await pollClientApi();
