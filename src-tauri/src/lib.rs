@@ -241,10 +241,14 @@ fn apply_window_mode(
 
     match mode {
         WindowMode::Overlay => {
-            // The overlay is sized programmatically and is not resizable, so it must be free of
-            // the analysis floor before `set_size` is called, or the floor wins.
-            window.set_min_size(None::<tauri::LogicalSize<f64>>)?;
-            window.set_max_size(None::<tauri::LogicalSize<f64>>)?;
+            // Pinned to exactly the overlay size, not merely freed from the analysis floor.
+            // Clearing the constraints is not enough: `tauri.conf.json` sets `minWidth`/
+            // `minHeight` on the window, so the floor is re-asserted by the toolkit and the
+            // overlay ends up clamped to whatever minimum is still in force (measured: the
+            // overlay came up 1024x656 instead of 380x300 at a 1.25 scale factor). Pinning both
+            // bounds makes the size a fact rather than a request that something else can refuse.
+            window.set_min_size(Some(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)))?;
+            window.set_max_size(Some(tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)))?;
             // Clearing click-through first matters when switching *out of* overlay mode and
             // back: the window would otherwise be shown before the flag is cleared and be
             // transparent-but-unclickable for a frame.
@@ -347,21 +351,74 @@ fn reposition_for_overlay(window: &WebviewWindow) {
     }
 }
 
-/// Keeps the overlay anchored to the game and directly above it, until the thread is told
-/// to stop.
+/// Whether the overlay should be claiming the keep-above state this tick.
+///
+/// A pure function so the decision is testable: the two behaviours that matter — yielding to a
+/// fullscreen client, and dropping the claim when the game is gone — are otherwise observable
+/// only by watching KWin. Restating the rule: keep-above holds only while the game is found and
+/// nobody else is fullscreen.
+///
+/// @param other_fullscreen Whether another client holds an active fullscreen window.
+/// @param game_anchored Whether the game window was found and restacked against.
+/// @returns Whether the window should be always-on-top.
+#[cfg(target_os = "linux")]
+fn desired_keep_above(other_fullscreen: bool, game_anchored: bool) -> bool {
+    !other_fullscreen && game_anchored
+}
+
+/// Applies [`desired_keep_above`] to the window, touching it only on a transition.
+///
+/// The flag is a window property, so setting it on every poll would send a request per tick for
+/// a value that is almost always unchanged.
+///
+/// @param window The overlay window.
+/// @param other_fullscreen Whether another client holds an active fullscreen window.
+/// @param game_anchored Whether the game window was found and restacked against.
+/// @param keep_above The watcher's current belief about the window's always-on-top state.
+/// @returns The state the caller should carry into the next poll.
+#[cfg(target_os = "linux")]
+fn apply_overlay_stacking(
+    window: &WebviewWindow,
+    other_fullscreen: bool,
+    game_anchored: bool,
+    keep_above: bool,
+) -> bool {
+    let next = desired_keep_above(other_fullscreen, game_anchored);
+    if next != keep_above {
+        if next {
+            // Re-showing is part of retaking the top: a window left behind another client's
+            // fullscreen may have been obscured long enough that the compositor will not
+            // re-evaluate it.
+            let _ = window.show();
+        }
+        let _ = window.set_always_on_top(next);
+    }
+    next
+}
+/// Keeps the overlay anchored to the game and directly above it, until the thread is told to
+/// stop.
 ///
 /// A thread rather than a Tauri interval because the work is a plain X round trip with no
 /// interaction with the app's state, and because the thing it replaces — `_NET_WM_STATE_ABOVE`
 /// — cannot be expressed as a window property at all (see `x11_overlay::anchor_overlay`).
 ///
-/// **This is what makes "always above the game, still below anything the player raises over
-/// it" true.** A window in the keep-above state floats over every other window, including
-/// ones the player deliberately brought forward; restacking expresses the narrower
-/// relationship that was actually asked for.
+/// **This is what makes "always above the game, still below anything the player raises over it"
+/// true.** A window in the keep-above state floats over every other window, including ones the
+/// player deliberately brought forward; restacking expresses the narrower relationship that was
+/// actually asked for.
+///
+/// The watcher also yields to a fullscreen client, because that relationship is not achievable
+/// here at all and pretending otherwise breaks the app. KWin's `Window::belongsToLayer` checks
+/// `isActiveFullScreen()` **before** `keepAbove()`, and `isActiveFullScreen` requires the
+/// fullscreen window to be the active one, so a genuinely focused fullscreen game sits on the
+/// `ActiveLayer` — above every layer a `keepAbove` toplevel can reach. No stacking request
+/// survives that, and the only way up is into `OverlayLayer` (a KWin rule or wlr-layer-shell,
+/// ADR 0003), which would also cover other applications' fullscreen windows. So while another
+/// client is fullscreen the watcher drops keep-above and re-shows the window: a window that is
+/// behind the game but can still be raised and read is far more useful than one that is
+/// invisible and yet still swallowing clicks. Keep-above returns as soon as it goes away.
 ///
 /// @param window The overlay window.
-/// @param running A flag the caller sets to `false` to stop the watcher; the loop exits
-///   within one poll interval.
 #[cfg(target_os = "linux")]
 fn watch_overlay_stacking(window: WebviewWindow) {
     use std::sync::atomic::Ordering;
@@ -381,12 +438,26 @@ fn watch_overlay_stacking(window: WebviewWindow) {
             return;
         };
 
+        // Only changed on a transition: the flag is a window property, and setting it every
+        // 400 ms would send a request per tick for a value that is almost always unchanged.
+        let mut keep_above = true;
         while OVERLAY_WATCH_RUNNING.load(Ordering::Relaxed) {
-            if window.is_visible().unwrap_or(false) && x11_overlay::anchor_overlay(id).is_none() {
-                // The game is not running (or has just exited). Stop claiming the keep-above
-                // state so the overlay does not float over unrelated windows while the
-                // player is doing something else; the next mode change re-applies it.
-                let _ = window.set_always_on_top(false);
+            if window.is_visible().unwrap_or(false) {
+                match x11_overlay::anchor_overlay(id) {
+                    Some(placement) => {
+                        keep_above = apply_overlay_stacking(
+                            &window,
+                            placement.other_fullscreen,
+                            true,
+                            keep_above,
+                        );
+                    }
+                    // No game window: stop claiming the top so the overlay does not float over
+                    // unrelated windows while the player is doing something else.
+                    None => {
+                        keep_above = apply_overlay_stacking(&window, false, false, keep_above);
+                    }
+                }
             }
             std::thread::sleep(x11_overlay::STACKING_POLL);
         }
@@ -637,7 +708,11 @@ pub fn run() {
             // Development affordance: start in overlay mode so its real compositor placement
             // can be inspected without pressing the hotkey. Reading the stack back from the X
             // server is the only way to check z-order and position. Not a user-facing setting.
-            if std::env::var_os("SC2SV_START_WITH_OVERLAY").is_some() {
+            // Any value other than `0` also means "show it", so setting the variable to a
+            // path or `true` still works; only an explicit `0` disables it.
+            if std::env::var_os("SC2SV_START_WITH_OVERLAY")
+                .is_some_and(|value| value != "0")
+            {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -930,5 +1005,33 @@ mod window_visibility_tests {
     #[test]
     fn an_automatic_mode_change_keeps_a_visible_window_visible() {
         assert!(should_reveal(Visibility::AsIs, true));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod overlay_stacking_tests {
+    use super::desired_keep_above;
+
+    /// The ordinary case: the game is on screen and nobody is fullscreen, so the overlay takes
+    /// the top and is then restacked to sit exactly one window up.
+    #[test]
+    fn the_overlay_claims_the_top_over_a_windowed_game() {
+        assert!(desired_keep_above(false, true));
+    }
+
+    /// A fullscreen client is on the compositor's `ActiveLayer`, above anything keep-above can
+    /// reach, so claiming the top would only misreport the situation. Dropping it means the
+    /// overlay is honestly behind the game and can be raised.
+    #[test]
+    fn the_overlay_yields_to_another_clients_fullscreen() {
+        assert!(!desired_keep_above(true, true));
+    }
+
+    /// No game window at all: the overlay must not float over unrelated windows while the
+    /// player is doing something else.
+    #[test]
+    fn the_overlay_releases_the_top_when_the_game_is_gone() {
+        assert!(!desired_keep_above(false, false));
+        assert!(!desired_keep_above(true, false));
     }
 }

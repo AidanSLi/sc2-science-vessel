@@ -69,6 +69,103 @@ const GAME_WINDOW_TITLE_PREFIXES: &[&str] = &["starcraft ii", "starcraft 2"];
 /// size filters them out without needing a hard-coded window id.
 const MIN_GAME_WINDOW_SIDE: u32 = 400;
 
+/// Title prefix of this application's own window, matched case-insensitively.
+///
+/// Used only to tell "some client went fullscreen" from "we did", since the app's own
+/// fullscreen state is not a reason to stop being an overlay.
+const OWN_WINDOW_TITLE_PREFIX: &str = "sc2-science-vessel";
+
+/// Reports whether some client other than this application holds a fullscreen window.
+///
+/// This exists because a fullscreen client defeats the overlay, and the overlay has to notice
+/// rather than sit ordered above a game that is drawing on top of it — the player would see no
+/// overlay at all while `always_on_top` claimed otherwise, which is the worst of both. KWin's
+/// `Window::belongsToLayer` tests `isActiveFullScreen()` before `keepAbove()`, and
+/// `isActiveFullScreen` requires the fullscreen window to be the active one, so an active
+/// fullscreen game sits on the `ActiveLayer`, above every layer a `keepAbove` toplevel can
+/// reach. The layers that *are* above it (`OverlayLayer`) also cover other applications'
+/// fullscreen windows, so going there is a deliberate, user-visible choice (a KWin rule or
+/// `wlr-layer-shell`, ADR 0003) rather than something to do silently.
+///
+/// Implemented by walking the tree rather than by asking the window manager, because there is no
+/// portable EWMH query for "is anything fullscreen".
+///
+/// @returns `true` if another client's viewable window lists `_NET_WM_STATE_FULLSCREEN`.
+pub fn another_client_is_fullscreen() -> bool {
+    let Ok((conn, screen_num)) = x11rb::connect(None) else {
+        return false;
+    };
+    another_client_is_fullscreen_with(&conn, screen_num)
+}
+
+/// [`another_client_is_fullscreen`] over an already-open connection, so it can share one.
+///
+/// @param conn An open X connection.
+/// @param screen_num The screen to search, as returned by `x11rb::connect`.
+/// @returns `true` if a client other than this application is fullscreen on that screen.
+fn another_client_is_fullscreen_with<C: Connection>(conn: &C, screen_num: usize) -> bool {
+    let Some(root) = conn.setup().roots.get(screen_num).map(|screen| screen.root) else {
+        return false;
+    };
+    // `_NET_WM_STATE` holds a list of atoms, so the value to look for must be interned as an
+    // atom too rather than compared as a string.
+    let Some(fullscreen) = intern_atom(conn, b"_NET_WM_STATE_FULLSCREEN") else {
+        return false;
+    };
+    let Some(net_wm_state) = intern_atom(conn, b"_NET_WM_STATE") else {
+        return false;
+    };
+    let Some(tree) = conn
+        .query_tree(root)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+    else {
+        return false;
+    };
+
+    let mut stack = tree.children;
+    while let Some(window) = stack.pop() {
+        if let Ok(cookie) = conn.query_tree(window) {
+            if let Ok(children) = cookie.reply() {
+                stack.extend(children.children);
+            }
+        }
+        // The app's own fullscreen would be a reason to keep being an overlay, not to stop.
+        let own = window_title(conn, window)
+            .map(|title| title.to_ascii_lowercase().starts_with(OWN_WINDOW_TITLE_PREFIX))
+            .unwrap_or(false);
+        if own || !is_viewable(conn, window) {
+            continue;
+        }
+        let fullscreen_found = conn
+            .get_property(false, window, net_wm_state, AtomEnum::ATOM, 0, 1024)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| {
+                reply
+                    .value32()
+                    .map(|values| values.into_iter().any(|value| value == fullscreen))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if fullscreen_found {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Interns an atom and returns its id.
+///
+/// @param conn An open X connection.
+/// @param name The atom's name.
+/// @returns The atom id, or `None` if the server refused.
+fn intern_atom<C: Connection>(conn: &C, name: &[u8]) -> Option<u32> {
+    let reply = conn.intern_atom(false, name).ok()?.reply().ok()?;
+    Some(reply.atom)
+}
+
 /// Returns whether an X server is reachable, i.e. whether XWayland is running.
 ///
 /// Used to decide whether forcing GTK onto the X11 backend will work. A Wayland session
@@ -170,6 +267,16 @@ pub fn find_game_window() -> Option<GameWindow> {
     find_game_window_with(&conn, screen_num)
 }
 
+/// What one stacking tick learned, so the caller needs only one X connection per tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayPlacement {
+    /// The game window's rectangle in root coordinates.
+    pub rect: Rect,
+    /// Whether some *other* client currently holds a fullscreen window, which defeats
+    /// keep-above on KWin and is reported so the caller can stop claiming it.
+    pub other_fullscreen: bool,
+}
+
 /// Glues `overlay` directly above the game window, returning the game's rectangle.
 ///
 /// This is the mechanism behind "above the game, but not above everything else".
@@ -184,9 +291,12 @@ pub fn find_game_window() -> Option<GameWindow> {
 ///
 /// @param overlay The overlay's X window id.
 /// @returns The game window's rectangle, or `None` when the game is not running.
-pub fn anchor_overlay(overlay: Window) -> Option<Rect> {
+pub fn anchor_overlay(overlay: Window) -> Option<OverlayPlacement> {
     let (conn, screen_num) = x11rb::connect(None).ok()?;
     let game = find_game_window_with(&conn, screen_num)?;
+    // Read the fullscreen state on the same connection: the watcher repeats this a few times a
+    // second, and a second connection per tick would be pure overhead.
+    let other_fullscreen = another_client_is_fullscreen_with(&conn, screen_num);
     conn.configure_window(
         overlay,
         &ConfigureWindowAux::new()
@@ -197,7 +307,10 @@ pub fn anchor_overlay(overlay: Window) -> Option<Rect> {
     // Without the flush the request can sit in the client buffer until the connection is
     // next used, which at a 400 ms poll would make the overlay trail the game visibly.
     conn.flush().ok()?;
-    Some(game.rect)
+    Some(OverlayPlacement {
+        rect: game.rect,
+        other_fullscreen,
+    })
 }
 
 /// Returns the X window id behind a Tauri window.
@@ -313,5 +426,12 @@ mod tests {
         if let Some(game) = find_game_window() {
             assert!(game.rect.width >= MIN_GAME_WINDOW_SIDE);
         }
+    }
+
+    #[test]
+    fn reports_a_fullscreen_state_without_an_x_server() {
+        // Totality again: a Wayland-only session must answer `false` rather than panic, since
+        // the watcher consults this on every tick.
+        let _ = another_client_is_fullscreen();
     }
 }

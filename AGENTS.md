@@ -197,7 +197,27 @@ and there is no extra multiplier to apply.
 - **A minimum window size is a hard floor the WM enforces, so it must move with the size.**
   Leaving the 900x600 analysis floor in place while sizing down to the 380x300 overlay clamps
   the overlay straight back to 900 wide. `apply_window_mode` therefore sets `min_size`/`max_size`
-  **per mode**; `tauri.conf.json` declares the same numbers for the first paint.
+  **per mode**; `tauri.conf.json` declares the same numbers for the first paint. **Clearing the
+  constraints to `None` is NOT enough** — the window's `minWidth`/`minHeight` from
+  `tauri.conf.json` are re-asserted by the toolkit, so the overlay still came up 1024x656
+  (measured) instead of 380x300. The overlay branch now pins `min_size` **and** `max_size` to
+  exactly `OVERLAY_WIDTH`/`OVERLAY_HEIGHT`, making the size a fact rather than a request that
+  something else can refuse. Verify a window-size change by reading the real geometry back
+  (`qdbus6 org.kde.KWin /KWin org.kde.KWin.getWindowInfo <uuid>`) — a `set_size` that returns
+  `Ok` proves nothing about the size the window ended up with.
+- **A fullscreen client defeats `always_on_top`, so the overlay yields instead of pretending.**
+  KWin's `Window::belongsToLayer()` tests `isActiveFullScreen()` **before** `keepAbove()`, so a
+  *focused* fullscreen window sits on `ActiveLayer` — above anything a keep-above toplevel can
+  reach — and `Workspace::constrainedStackingOrder()` sorts purely by layer index, so no
+  restacking crosses layers either (ADR 0008's mechanism cannot help here). The watcher
+  therefore reads `_NET_WM_STATE_FULLSCREEN` off the same X connection it restacks over and
+  **drops keep-above while another client is fullscreen** (`desired_keep_above`, tested), so the
+  app reports the state it actually has and the overlay stays recoverable (raise it) rather
+  than invisible-but-present over a game that is drawing on top of it. Layers that *are* above
+  `ActiveLayer` (`OverlayLayer`, reachable via a KWin rule or `wlr-layer-shell`, ADR 0003/0011)
+  also cover other applications' fullscreen windows, so neither is the default. Note that
+  `isActiveFullScreen` is focus-conditional: a fullscreen game that lost focus is *not* on
+  `ActiveLayer`, which is why a windowed or unfocused game keeps working normally.
 - **The global shortcut cannot be tested by injecting keys on this machine.** XTEST
   synthesises keys but they do **not** reach XGrabKey grabs through Xwayland: a bare
   `XGrabKey` + XTEST test showed the grab never firing, so a hotkey test that "did nothing"
