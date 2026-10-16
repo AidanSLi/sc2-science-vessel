@@ -265,7 +265,7 @@ fn apply_window_mode(
                 window.show()?;
             }
             // Anchoring and click-through come after `show` for the reason in the docstring.
-            reposition_for_overlay(&window);
+            reposition_for_overlay(&window, None);
             window.set_always_on_top(true)?;
             window.set_ignore_cursor_events(true)?;
             // Only watch stacking for a visible overlay: the watcher's whole job is to express
@@ -330,16 +330,19 @@ fn apply_window_mode(
 /// after a hotkey press.
 pub const WINDOW_MODE_EVENT: &str = "window-mode";
 
-/// Places the window for overlay mode: over the game's top-left corner, or centred.
+/// Places the window for overlay mode: over the game's top-left corner, or a fixed fallback.
 ///
 /// A fallback is needed because the player may toggle the overlay before the game has
 /// started, which is the ordinary case rather than an error.
 ///
 /// @param window The window to move.
-fn reposition_for_overlay(window: &WebviewWindow) {
+/// @param game The game's rectangle when it is known. The stacking watcher passes the one it
+///   has already read, so a move does not re-walk the window tree and open a second X
+///   connection 2.5 times a second for a value it holds.
+fn reposition_for_overlay(window: &WebviewWindow, game: Option<x11_overlay::Rect>) {
     #[cfg(target_os = "linux")]
     {
-        let (x, y) = overlay_position(window);
+        let (x, y) = overlay_position(window, game);
         if let Err(err) = window.set_position(tauri::LogicalPosition::new(x, y)) {
             eprintln!("could not move the overlay ({err})");
         }
@@ -347,7 +350,7 @@ fn reposition_for_overlay(window: &WebviewWindow) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = window;
+        let _ = (window, game);
     }
 }
 
@@ -369,7 +372,9 @@ fn desired_keep_above(other_fullscreen: bool, game_anchored: bool) -> bool {
 /// Applies [`desired_keep_above`] to the window, touching it only on a transition.
 ///
 /// The flag is a window property, so setting it on every poll would send a request per tick for
-/// a value that is almost always unchanged.
+/// a value that is almost always unchanged. The position is different: the player may drag or
+/// resize the game at any time, and the overlay is meant to sit in the game's top-left corner, so
+/// the move is attempted every poll and skipped at the X level when nothing has changed.
 ///
 /// @param window The overlay window.
 /// @param other_fullscreen Whether another client holds an active fullscreen window.
@@ -441,6 +446,10 @@ fn watch_overlay_stacking(window: WebviewWindow) {
         // Only changed on a transition: the flag is a window property, and setting it every
         // 400 ms would send a request per tick for a value that is almost always unchanged.
         let mut keep_above = true;
+        // The last game rect the overlay was placed against, so a poll that finds the game in the
+        // same place does not issue a move request. Comparing here rather than inside
+        // `set_position` keeps the decision where the previous state lives.
+        let mut last_anchor: Option<(i32, i32)> = None;
         while OVERLAY_WATCH_RUNNING.load(Ordering::Relaxed) {
             if window.is_visible().unwrap_or(false) {
                 match x11_overlay::anchor_overlay(id) {
@@ -451,11 +460,20 @@ fn watch_overlay_stacking(window: WebviewWindow) {
                             true,
                             keep_above,
                         );
+                        // Moving the game must move the overlay with it, otherwise the guide
+                        // drifts away from the corner the player expects to find it in the
+                        // moment they drag the game window.
+                        let anchor = (placement.rect.x, placement.rect.y);
+                        if last_anchor != Some(anchor) {
+                            reposition_for_overlay(&window, Some(placement.rect));
+                            last_anchor = Some(anchor);
+                        }
                     }
                     // No game window: stop claiming the top so the overlay does not float over
                     // unrelated windows while the player is doing something else.
                     None => {
                         keep_above = apply_overlay_stacking(&window, false, false, keep_above);
+                        last_anchor = None;
                     }
                 }
             }
@@ -463,12 +481,6 @@ fn watch_overlay_stacking(window: WebviewWindow) {
         }
     });
 }
-
-/// No-op off Linux, where the game window cannot be located this way.
-///
-/// @param _window The overlay window.
-#[cfg(not(target_os = "linux"))]
-fn reposition_overlay(_window: &WebviewWindow) {}
 
 /// Where to put the overlay, preferring the game window's top-left corner.
 ///
@@ -482,18 +494,19 @@ fn reposition_overlay(_window: &WebviewWindow) {}
 /// somewhere predictable rather than not at all.
 ///
 /// @param window The overlay window, used to read its own scale factor.
+/// @param game The game's rectangle when already known, or `None` to look it up here.
 /// @returns The position to move the overlay to, in logical pixels.
 #[cfg(target_os = "linux")]
-fn overlay_position(window: &WebviewWindow) -> (f64, f64) {
-    if let Some(game) = x11_overlay::find_game_window() {
+fn overlay_position(window: &WebviewWindow, game: Option<x11_overlay::Rect>) -> (f64, f64) {
+    if let Some(game) = game.or_else(|| x11_overlay::find_game_window().map(|found| found.rect)) {
         // X11 coordinates are physical pixels while Tauri positions in logical pixels, so on
         // a scaled display (the reference machine runs 3840x2160 at 200%) an unconverted
         // offset would place the overlay at twice the intended distance.
         let scale = window.scale_factor().unwrap_or(1.0);
         if scale > 0.0 {
             return (
-                (game.rect.x as f64 + f64::from(OVERLAY_INSET)) / scale,
-                (game.rect.y as f64 + f64::from(OVERLAY_INSET)) / scale,
+                (game.x as f64 + f64::from(OVERLAY_INSET)) / scale,
+                (game.y as f64 + f64::from(OVERLAY_INSET)) / scale,
             );
         }
     }
