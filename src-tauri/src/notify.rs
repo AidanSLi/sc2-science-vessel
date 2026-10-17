@@ -104,7 +104,8 @@ pub fn show_game_start_popup(shortcut: &str) {
         .summary(POPUP_TITLE)
         .body(&body)
         // Critical is what makes it visible over a fullscreen game on KDE; see the module note.
-        // It is a no-op on Windows, where the toast backend ignores urgency entirely.
+        // On Windows the same call maps to WinRT's `Scenario::Reminder`, which is the closest
+        // equivalent (stay on screen until dismissed).
         .urgency(notify_rust::Urgency::Critical)
         .show()
     {
@@ -119,13 +120,23 @@ pub fn show_game_start_popup(shortcut: &str) {
     // `close()` sends a `CloseNotification` for this notification's id; it returns `()` and
     // reports nothing, so there is no failure to handle here.
     //
-    // On Windows this is a no-op — `notify-rust` v4.18.2 has no `close` for its WinRT toast
-    // handle (see the module note) — so the thread there is harmless rather than effective. It is
-    // still spawned unconditionally so the two platforms share one code path.
+    // The `cfg` is load-bearing, not tidiness: only notify-rust's xdg backend implements
+    // `NotificationHandle::close` at all. The Windows handle (`src/windows.rs`) offers
+    // `wait_for_action`/`wait_for_response`/`on_close` and no way to dismiss, and the macOS
+    // handle has none either — so calling this unconditionally failed to compile on Windows with
+    // `error[E0599]: no method named `close` found for struct `NotificationHandle``. There the
+    // toast's lifetime is the system's to decide, which `Urgency::Critical` (Scenario::Reminder)
+    // already asks to be "until dismissed".
+    #[cfg(all(unix, not(target_os = "macos")))]
     std::thread::spawn(move || {
         std::thread::sleep(POPUP_LIFETIME);
         handle.close();
     });
+
+    // Without the close thread the handle is unused, and dropping it is the correct Windows
+    // behaviour: the toast is already shown and notify-rust keeps its own state alive.
+    #[cfg(any(not(unix), target_os = "macos"))]
+    drop(handle);
 }
 
 #[cfg(test)]

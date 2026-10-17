@@ -422,6 +422,24 @@ and there is no extra multiplier to apply.
 - Windows code is written from the documented API but has never been run on Windows: there is no
   Windows machine here and no Windows target links on Linux. Do not describe it as verified, and
   treat the first real Windows run as the verification step.
+- **`notify-rust`'s `NotificationHandle` methods differ per backend, so any use of one must be
+  `cfg`-gated.** Only the xdg backend implements `NotificationHandle::close`
+  (`notify-rust-4.18.2/src/xdg/mod.rs:214`); the Windows handle has `wait_for_action`,
+  `wait_for_response`, `on_close` and the macOS handle has none either. Calling `close()`
+  unconditionally compiles on Linux and fails on Windows with
+  `error[E0599]: no method named `close` found for struct `NotificationHandle``. The gate in use is
+  `#[cfg(all(unix, not(target_os = "macos")))]`.
+- **`tauri-build` needs `icons/icon.ico` to build for Windows at all** — it is embedded in the
+  executable's resource section. A repo with only PNG icons builds fine on Linux and fails on
+  Windows with `` `.../icons/icon.ico` not found; required for generating a Windows Resource
+  file``. `pnpm tauri icon src-tauri/icons/icon.png` regenerates the whole platform set; keep
+  `icon.ico` and `icon.icns` listed in `tauri.conf.json`'s `bundle.icon`.
+- **Rehearse a Windows-only compile error without a Windows toolchain**: a tiny scratch crate
+  containing just the offending module plus its dependency can be `cargo check --target
+  x86_64-pc-windows-msvc`'d on Linux. `notify-rust` and the `windows` crate need no MSVC linker
+  to *type-check*; only `ring` does, and it is the one thing that stops the full app from being
+  cross-checked. This caught nothing here that CI had not, but it turns a 20-minute CI round trip
+  into a 5-second local one.
 - The app is called **SC2 Science Vessel** (`productName`, the window title, and
   `notify::POPUP_TITLE`), while the binary, the `.deb` package name, and the D-Bus/desktop
   identity stay `sc2-science-vessel`. Both spellings are load-bearing: KWin matches `WM_CLASS`
