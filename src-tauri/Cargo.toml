@@ -36,9 +36,6 @@ tauri-plugin-http = "2.8.2"
 # a second, parallel notification library to the build.
 notify-rust = { version = "4.18", default-features = false, features = ["z"] }
 tauri-plugin-notification = "2.7.0"
-# Writes the desktop's own autostart entry, so "launch at login" works through the mechanism
-# each platform already has rather than an app-specific hack.
-tauri-plugin-autostart = "2.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Tauri implements this trait but does not re-export it, and it is the only way to reach the

@@ -50,7 +50,7 @@ use crate::game_process;
 pub const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The name the watcher publishes its control port under.
-const CONTROL_NAME: &str = "watcher";
+use control::WATCHER_CONTROL_NAME as CONTROL_NAME;
 
 /// A command from a second launch to the running watcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,8 +68,8 @@ impl Command {
 	/// @returns The command, or `None` when the line is not one this watcher implements.
 	fn parse(line: &str) -> Option<Self> {
 		match line.trim() {
-			"show" => Some(Self::Show),
-			"quit" => Some(Self::Quit),
+			control::SHOW => Some(Self::Show),
+			control::QUIT => Some(Self::Quit),
 			_ => None,
 		}
 	}

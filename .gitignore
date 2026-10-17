@@ -38,4 +38,6 @@ data/
 # the frozen sidecar, produced by `python tools/build_sidecar.py`; 18 MiB per platform and
 # specific to the machine that built it, so it is built in CI rather than committed
 src-tauri/sc2sv-sidecar*
+src-tauri/sc2sv-watch*
+src-tauri/watcher-bin/target/
 build/sidecar/

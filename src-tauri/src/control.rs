@@ -29,6 +29,26 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
+/// The name the *watcher* publishes its control port under.
+///
+/// Declared here rather than in `watcher.rs` because both halves of the app need it and only one
+/// of them includes `watcher.rs`: the GUI's tray "Quit" has to reach the watcher, since the watcher
+/// supervises the GUI and would otherwise start a fresh window the next time StarCraft II appeared.
+/// Putting the strings next to the transport that carries them keeps them in one place both sides
+/// compile against, so neither can drift.
+pub const WATCHER_CONTROL_NAME: &str = "watcher";
+
+/// The control command that brings the app up, spawning a GUI when there is none.
+///
+/// Only the watcher handles it, and only the GUI sends it, so each of the two binaries sees one
+/// half of this constant's life as dead code. That is exactly why it lives here: a per-crate
+/// definition would be a definition per crate to keep in step.
+#[allow(dead_code)]
+pub const SHOW: &str = "show";
+
+/// The control command that stops the watcher and the GUI it owns.
+pub const QUIT: &str = "quit";
+
 /// The largest single command accepted, in bytes.
 ///
 /// Every real command is a handful of bytes; this is a bound on a hostile or broken peer, not a

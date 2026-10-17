@@ -165,8 +165,8 @@ impl Settings {
     ///
     /// @param app The running app handle.
     /// @returns `true` when enabling autostart makes sense for this build.
-    pub fn autostart_available(app: &AppHandle) -> bool {
-        app.path().resource_dir().is_ok_and(|dir| dir.exists())
+    pub fn autostart_available(_app: &AppHandle) -> bool {
+        crate::autostart::available()
     }
 }
 

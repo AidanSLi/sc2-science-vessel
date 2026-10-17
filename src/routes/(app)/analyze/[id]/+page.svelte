@@ -162,7 +162,7 @@
 </script>
 
 <svelte:head>
-	<title>{payload ? `${payload.map} — sc2-science-vessel` : 'Analysis — sc2-science-vessel'}</title>
+	<title>{payload ? `${payload.map} — SC2 Science Vessel` : 'Analysis — SC2 Science Vessel'}</title>
 </svelte:head>
 
 <section class="space-y-6">

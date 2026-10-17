@@ -27,14 +27,12 @@ use tauri::{Emitter, Manager, WebviewWindow};
 
 #[cfg(target_os = "linux")]
 mod portal_shortcut;
+pub mod autostart;
 mod control;
-mod game_process;
 pub mod gui_control;
-pub mod watcher;
 mod game_watch;
 mod notify;
 mod platform;
-pub mod single_instance;
 mod settings;
 mod sidecar;
 #[cfg(target_os = "linux")]
@@ -713,7 +711,13 @@ fn frontend_ready(app: tauri::AppHandle) {
 /// @returns The current settings.
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Settings {
-    Settings::load(&app)
+    let mut settings = Settings::load(&app);
+    // Reported from the filesystem rather than from the stored value, because the login entry is
+    // the thing that decides whether the app starts at login, and the user can remove it from
+    // their desktop's own startup settings without going through this app. Reading it back means
+    // the switch always shows what will actually happen at the next login.
+    settings.launch_at_login = autostart::is_enabled();
+    settings
 }
 
 /// Rebinds the overlay toggle key and persists it.
@@ -847,18 +851,16 @@ fn set_start_hidden(app: tauri::AppHandle, enabled: bool) -> Result<bool, String
 /// reasoning is the reason this returns an error instead of silently writing a login entry
 /// pointing at a `target/debug` binary that the next `cargo` run will replace.
 ///
-/// The autostart plugin is the only thing that writes the desktop's autostart entry, so the
-/// stored setting and the desktop are changed together; if the desktop change fails, the
-/// setting is not persisted, or the settings page and the user's login behaviour would
-/// disagree.
+/// The login entry and the stored setting are changed together, in that order: if writing the
+/// entry fails the setting is not persisted, or the settings page and the user's login
+/// behaviour would disagree. The entry names the **watcher**, not this program, which is why it
+/// is written here rather than by a Tauri plugin — see [`autostart`].
 ///
 /// @param app The running app handle.
 /// @param enabled Whether to launch the app at login.
 /// @returns The stored value.
 #[tauri::command]
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
-
     if !Settings::autostart_available(&app) {
         return Err(
             "launch at login needs an installed build; run the app from a bundle or package \
@@ -867,12 +869,7 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
         );
     }
 
-    let autolaunch = app.autolaunch();
-    if enabled {
-        autolaunch.enable().map_err(|err| err.to_string())?;
-    } else {
-        autolaunch.disable().map_err(|err| err.to_string())?;
-    }
+    autostart::set_enabled(enabled)?;
 
     let mut current = Settings::load(&app);
     current.launch_at_login = enabled;
@@ -933,7 +930,15 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let _ = app.emit("navigate", "settings");
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                // The watcher supervises this process, so quitting only the window would leave
+                // it to notice the exit and start a fresh one the next time SC2 appears —
+                // the app would seem to ignore "Quit". Asking the watcher to stop retires it
+                // too; when the GUI was started by hand there is no watcher listening and the
+                // send simply fails, which is the correct outcome.
+                control::send_to(control::WATCHER_CONTROL_NAME, control::QUIT);
+                app.exit(0);
+            }
             _ => {}
         })
         .build(app)?;
@@ -953,14 +958,6 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            // The login launch must be silent: the player is logging in, not asking for a
-            // window. This flag is how `main` tells the two launches apart, because the same
-            // installed executable is both an autostart entry and a menu item and nothing else
-            // distinguishes them (ADR 0013).
-            Some(vec!["--watched-by-desktop"]),
-        ))
         // Reveals the main window once the frontend has painted (see `reveal_main_window`).
         .invoke_handler(tauri::generate_handler![
             frontend_ready,

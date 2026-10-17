@@ -95,14 +95,45 @@
   exact `StarCraft II`/`StarCraft 2` beats a prefix match like `StarCraft II — Dolphin`, which
   otherwise competes with the real game — and ties break on area.
 
-## The process model: one binary, two roles
+## The process model: two binaries
 
 - **The app is a watcher that owns a GUI child, not a resident web view.** Measured on the
   reference machine, idle and hidden: a resident Tauri app costs **259 MiB PSS** across three
   processes (`sc2-science-vessel` 123, `WebKitWebProcess` 101, `WebKitNetworkProcess` 34), where
-  a dependency-free watcher costs **0.4 MiB**. That is ~600x, and no arrangement of a web view
-  closes the gap. `main` picks the role from the command line: no arguments (or any argument
-  other than `--gui`) is the watcher; `--gui` is the window. See ADR 0013.
+  a dependency-free watcher costs **0.5 MiB**. That is ~500x, and no arrangement of a web view
+  closes the gap. See ADR 0013.
+- **The two roles are two executables, and that is deliberate.** `sc2sv-watch` (crate
+  `src-tauri/watcher-bin/`, no dependencies) is the resident process; `sc2-science-vessel` is the
+  window. They started as one binary chosen by `--gui`, which was wrong for a measurable reason:
+  one ELF shares one set of shared libraries, so the watcher mapped WebKit and GTK it never
+  called into — **23.6 MiB PSS instead of 0.5 MiB**. Do not merge them back to "simplify"; the
+  split *is* the size fix. See ADR 0014.
+- **The watcher's logic lives once, included by path.** `watcher-bin/src/main.rs` pulls
+  `control.rs`, `game_process.rs`, `gui_control.rs`, `single_instance.rs` and `watcher.rs` out of
+  `src-tauri/src/` with `#[path]`. A copy would drift, and the two roles would disagree about
+  something invisible such as which process names count as the game. Both crates test the same
+  files, which is why `cargo test` in `watcher-bin` runs 22 of the same tests.
+- **`sc2sv-watch` is staged for the bundler by `tools/build_watcher.py`**, because Tauri can only
+  bundle the binary named in `Cargo.toml` and `externalBin` is the one mechanism that installs a
+  second executable beside it. The staged name must carry the host target triple or the bundle
+  fails looking for a file that is not there. `--check` exists for CI to fail early.
+- **The watcher finds the GUI by sibling lookup**, not by configuration: both are installed into
+  the same directory. `SC2SV_GUI_EXECUTABLE` overrides that for the case where a packager
+  separates them.
+- **Quit from the tray also stops the watcher.** Otherwise the watcher sees its child exit, keeps
+  running, and starts a fresh window the next time SC2 appears — the app would look as if it had
+  ignored "Quit". `control::QUIT` / `control::WATCHER_CONTROL_NAME` are declared in
+  `control.rs` rather than `watcher.rs` precisely because the GUI cannot include `watcher.rs`
+  without dragging the whole supervisor in.
+- **"Launch at login" writes the desktop entry itself, naming `sc2sv-watch`.** It was
+  `tauri-plugin-autostart` until the split, and that plugin can only record
+  `std::env::current_exe()` — which is necessarily the GUI, since the settings page asks from
+  there. A login entry pointing at the GUI starts a window with no watcher behind it and no game
+  detection at all. See `src-tauri/src/autostart.rs`; only Linux is implemented, and it returns
+  an explicit error rather than silently doing nothing elsewhere.
+- **The token on the path is the app, not the window.** `~/.local/bin/sc2-science-vessel` is a
+  symlink to `sc2sv-watch`, and the `.desktop` entry's `Exec` names the watcher, because "run the
+  app" means "be resident and show me a window".
 - **The user's vocabulary is load-bearing: the *game* is the SC2 process, a *match* is one game
   inside it.** The watcher detects the game, by process name, and the GUI detects a match, from
   the client API's screen list. Do not conflate them: "is SC2 running" cannot be asked of the

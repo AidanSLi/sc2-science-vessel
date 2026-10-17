@@ -9,14 +9,23 @@
 	import { formatGameTime } from '#lib/clock';
 	import { sampleBuildOrder } from '#lib/sample-build';
 
-	/** Milestones, with what "done" means for each. */
+	/**
+	 * Milestones, with what "done" means for each.
+	 *
+	 * Kept as data rather than prose so the count above cannot drift out of step with the list.
+	 * A milestone is done when it works against a real replay or a running game, not when the
+	 * code exists — several of these were marked done only after an end-to-end run.
+	 */
 	const milestones = [
 		{ label: 'Skeleton (SvelteKit + Tailwind + Tauri 2)', done: true },
-		{ label: 'Confirm the client API clock on localhost:6119', done: false },
-		{ label: 'Python sidecar: index and parse a replay library', done: false },
-		{ label: 'Metric layer: economy, military, production, army', done: false },
-		{ label: 'Overlay driven by the game clock, per-matchup presets', done: false },
-		{ label: 'Build imports: SpawningTool snapshot and SALT', done: false }
+		{ label: 'Confirm the client API clock on localhost:6119', done: true },
+		{ label: 'Python sidecar: index and parse a replay library', done: true },
+		{ label: 'Metric layer: economy, military, production, army', done: true },
+		{ label: 'Overlay driven by the game clock, per-matchup presets', done: true },
+		{ label: 'Build imports: SpawningTool snapshot and SALT', done: true },
+		{ label: 'Resident watcher that owns the window lifetime', done: true },
+		{ label: 'Overlay over a fullscreen game (needs a compositor surface)', done: false },
+		{ label: 'Windows overlay and game detection', done: false }
 	];
 
 	const remaining = milestones.filter((m) => !m.done).length;
@@ -27,7 +36,7 @@
 
 <section class="space-y-8">
 	<div>
-		<h1 class="text-2xl font-semibold tracking-tight">sc2-science-vessel</h1>
+		<h1 class="text-2xl font-semibold tracking-tight">SC2 Science Vessel</h1>
 		<p class="mt-2 max-w-3xl text-sm text-ink-300">
 			Replay analysis and a build-order coach for StarCraft II, running entirely on this
 			machine. No account, no upload, and no network beyond the game client on loopback.
@@ -75,9 +84,10 @@
 	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-6">
 		<h2 class="text-sm font-semibold">What this build is</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
-			A skeleton: navigation, the design tokens, the build-order guide, and the desktop shell
-			with its overlay window. No replay has been read yet. The feasibility study behind the
-			design, including the numbers it was verified against, is in
+			A beta: replay analysis, a build-order library and a live overlay, in one window that
+			changes shape with what you are doing. The app waits for StarCraft&nbsp;II in the
+			background and only pays for its web view while the game is open. The feasibility study
+			behind the design, including the numbers it was verified against, is in
 			<code class="rounded bg-surface-950 px-1 py-0.5 text-xs">docs/assessment.md</code>.
 		</p>
 	</div>

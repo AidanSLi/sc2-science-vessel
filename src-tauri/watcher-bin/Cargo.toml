@@ -1,0 +1,27 @@
+[package]
+name = "sc2sv-watch"
+version = "0.1.0-beta.1"
+description = "The resident half of SC2 Science Vessel: watches for StarCraft II and owns the window"
+authors = ["AidanSLi"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+# Deliberately empty, and that is the whole point of this crate existing.
+#
+# The app is one program with two roles, but a single ELF for both roles costs the resident role
+# the entire web view stack: measured at 23.6 MiB PSS, against 486 KiB for this build of the same
+# source. The watcher never calls into Tauri, WebKit or GTK, so linking them is pure waste in the
+# one process that is supposed to run all day. The user's requirement was that a resident process
+# be "extremely small", and this is what meets it.
+#
+# The source is not duplicated: `main.rs` includes the modules from the parent crate by path, so
+# there is exactly one copy of the watcher's logic and it is tested by both builds.
+[dependencies]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -145,7 +145,62 @@ pnpm tauri build --bundles deb,appimage
 
 ---
 
-## 4. Platform support matrix for the overlay and the hotkey
+## 4. The app ships three executables, and the desktop entry starts the smallest one
+
+A packaged install contains:
+
+| path in the package (`.deb`) | size (release, approx.) | what it is |
+|---|---|---|
+| `usr/bin/sc2-science-vessel` | 30–40 MiB | the window: Tauri, WebKit and the frontend |
+| `usr/bin/sc2sv-watch` | **367 KiB** | the resident supervisor (ADR 0014) |
+| `usr/bin/sc2sv-sidecar` | **18 MiB** | the frozen Python replay parser (ADR 0001) |
+
+All three go through `externalBin`, which is the only mechanism Tauri offers for shipping an
+extra executable, and it installs them into the same directory as the main binary — which the
+watcher relies on, because it finds the window by sibling lookup.
+
+### Why `Exec` in the generated `.desktop` still points at the window
+
+Tauri writes one `.desktop` file whose `Exec` names the main binary, and exposes no per-format
+`Exec`. So the packaged menu entry launches `sc2-science-vessel` — the *window* — even though the
+app's supervisor is `sc2sv-watch`.
+
+Rather than maintain three hand-written `.desktop` templates, the window's `main` **hands over**:
+launched with no arguments, it `exec`s the sibling `sc2sv-watch` and exits; launched with `--gui`
+(which is what the watcher does), it opens a window. `exec` rather than spawn means the desktop
+keeps seeing one process under the pid it started.
+
+The two-argument consequence to remember: **a packaged menu click and the packaged autostart
+entry both go through the window binary first.** They cost one `exec` and nothing else — no
+window is created on that path.
+
+### Verified package contents
+
+`pnpm tauri build --debug --bundles deb`, then `ar x` + `tar xzf data.tar.gz`:
+
+```
+usr/bin/sc2sv-watch                                            376248
+usr/bin/sc2sv-sidecar                                        18896240
+usr/bin/sc2-science-vessel                                  355577872   (debug build)
+usr/share/applications/sc2-science-vessel.desktop
+Exec=sc2-science-vessel
+```
+
+The debug binary is 340 MiB, which is why the `.deb` is 102 MiB in debug and far smaller in
+release. **Do not judge package size from a `--debug` build.**
+
+### `tools/build_watcher.py`
+
+The watcher is staged before every bundle, because `externalBin` resolves
+`sc2sv-watch-<triple>` and a missing file fails the build rather than producing a package without
+it. The script is deliberately not part of `tauri build`: it must run *before*, and Tauri offers
+only a single `beforeBuildCommand`, which the frontend build already occupies — so
+`tools/install_dev.sh` and CI call it explicitly, and `--check` exists so CI can fail with a clear
+message instead of at bundle time.
+
+---
+
+## 5. Platform support matrix for the overlay and the hotkey
 
 The overlay and the global hotkey are the only two features that cannot be written once and used
 everywhere, because neither "stay above that other application's window" nor "receive this key
@@ -180,7 +235,7 @@ All three are needed. On the X11 backend through XWayland all three work, which 
 
 ---
 
-## 5. Open questions and known limitations
+## 6. Open questions and known limitations
 
 - **The other Wayland compositors are the ones that would work best, and the app is not using
   them yet.** Hyprland, Sway, Niri and COSMIC all implement `zwlr_layer_shell_v1`
@@ -236,7 +291,7 @@ These are recorded rather than papered over.
 
 ---
 
-## 6. Cutting a release
+## 7. Cutting a release
 
 The workflow is manual on purpose, so a release is always a deliberate act:
 

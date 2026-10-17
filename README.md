@@ -18,14 +18,31 @@ the real desktop session on this machine, and it is explicit about which claims 
 
 ## Status
 
-Skeleton. The assessment, ADRs, and conventions are written, and the app runs end to end:
-SvelteKit 3 + Tailwind 4 in a Tauri 2 shell, with the always-on-top click-through overlay
-window and its global-shortcut toggle. Nothing reads a replay yet — the next milestone is
-the Python sidecar (Phase 1).
+**Beta.** The app installs and runs end to end on Linux: it waits for StarCraft II in the
+background, spawns its window when the game starts, switches that window into a transparent
+click-through build-order overlay when a match begins, back to an ordinary resizable window at
+the score screen, and retires the window when the game exits. Replay analysis and build-order
+search work; Windows is wired for packaging but its watcher is not implemented yet, and macOS
+is untested.
 
-The SC2 Client API clock on `localhost:6119`, which the overlay's timer depends on, is
-still **UNVERIFIED against a running game**; only one replay exists on the reference
-machine and StarCraft II is not installed there.
+### How the processes fit together
+
+The app is **two executables**, and the reason is measured rather than stylistic:
+
+| process | runs | memory when idle |
+|---|---|---|
+| `sc2sv-watch` | always, from login | **~0.5 MiB** |
+| `sc2-science-vessel` | only while the game is open | ~259 MiB with its web view |
+
+A resident web view costs 259 MiB whether or not anyone is looking at it, so the supervisor is
+a dependency-free binary that polls for the game once a second and owns the window's lifetime.
+The window is spawned **hidden** when the game starts and reveals itself as the overlay only
+when a match actually begins, so the first thing you see is never a stale window from last
+game. See `docs/adr/0013-a-watcher-owns-the-web-view.md` and
+`docs/adr/0014-the-watcher-is-its-own-executable.md`.
+
+Running the app once is enough: it stays resident, and the overlay hotkey works whether or not
+a game is running.
 
 ## Running it
 
@@ -34,10 +51,22 @@ Prerequisites: Node 22+, pnpm 12+, Rust 1.77+ with the Tauri 2 system dependenci
 
 ```sh
 pnpm install
-pnpm check         # svelte-check, zero warnings is the bar
-pnpm build         # static SPA into build/
-pnpm tauri dev     # the desktop app
+pnpm check              # svelte-check, zero warnings is the bar
+pnpm test               # vitest
+python3 tools/build_watcher.py   # stage the resident watcher for the bundler
+pnpm tauri dev          # the desktop app, without the watcher
+
+tools/install_dev.sh    # install into ~/.local, as a real packaged app would be
 ```
+
+**`tools/install_dev.sh` is what you want for anything beyond UI work.** The app is meant to be
+installed: the XDG hotkey portal resolves its identity from a `.desktop` file, launch-at-login
+is refused for an uninstalled build, and the watcher finds the window beside itself. The script
+builds through `pnpm tauri build`, which — unlike `cargo build` — embeds the frontend; a
+cargo-built binary points its web view at `localhost:1420` and shows a connection error.
+
+`tools/install_dev.sh --no-build` reinstalls whatever was built last, which is the quick loop
+for trying a UI change against the installed app.
 
 The global shortcut is X11-only (Tauri issue 3578); on Wayland open the overlay from the
 Builds page instead. This does not change the overlay window's behaviour.

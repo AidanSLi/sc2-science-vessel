@@ -50,7 +50,8 @@
     "shortDescription": "Offline SC2 replay analysis, build orders and an in-game overlay",
     "longDescription": "Analyse StarCraft II replays locally — worker, economy, production and battle metrics — and follow a preset build order on the game's own clock in a transparent overlay. No account and no network required for replay analysis.",
     "externalBin": [
-      "sc2sv-sidecar"
+      "sc2sv-sidecar",
+      "sc2sv-watch"
     ]
   }
 }

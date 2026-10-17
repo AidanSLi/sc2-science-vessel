@@ -15,9 +15,11 @@
 #
 # ## What it installs
 #
-#   ~/.local/lib/sc2-science-vessel/sc2-science-vessel   the app (watcher + GUI, one binary)
+#   ~/.local/lib/sc2-science-vessel/sc2sv-watch          the watcher (about 370 KiB, always running)
+#   ~/.local/lib/sc2-science-vessel/sc2-science-vessel   the window (WebKit, started on demand)
 #   ~/.local/lib/sc2-science-vessel/sc2sv-sidecar        the Python replay parser
-#   ~/.local/bin/sc2-science-vessel                      a symlink, so it is on PATH
+#   ~/.local/bin/sc2-science-vessel                      a symlink to the watcher, so the menu,
+#                                                        autostart and PATH all mean "the app"
 #   ~/.local/share/applications/sc2-science-vessel.desktop
 #   ~/.local/share/icons/hicolor/<size>/apps/sc2-science-vessel.png
 #
@@ -32,7 +34,9 @@
 #   tools/install_dev.sh --uninstall  remove everything this script installed
 #
 # The debug build is the default because the point is to see UI changes quickly; a release build
-# takes about two minutes and is what you want when checking performance.
+# takes about two minutes and is what you want when checking performance. The *watcher* is always
+# built optimised: it is the process that runs all session, and its size requirement is what the
+# split into two binaries exists to meet.
 
 set -euo pipefail
 
@@ -75,6 +79,9 @@ uninstall() {
 	echo "Removing ${PRODUCT_NAME} from ${HOME}/.local"
 	rm -f "${BIN_DIR}/${APP_NAME}"
 	rm -f "${DESKTOP_DIR}/${APP_NAME}.desktop"
+	# The login entry names an absolute path inside LIB_DIR, so leaving it behind would make the
+	# next login try to start a program that no longer exists.
+	rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/autostart/${APP_NAME}.desktop"
 	rm -rf "${LIB_DIR}"
 	for size in 32x32 128x128 256x256@2 512x512; do
 		rm -f "${ICON_DIR}/${size}/apps/${APP_NAME}.png"
@@ -100,6 +107,15 @@ if [ "$DO_BUILD" = "1" ]; then
 	if [ ! -f "${SIDECAR}" ]; then
 		echo "Freezing the replay parser (first run only, takes a minute)…"
 		uv run --with pyinstaller python tools/build_sidecar.py
+	fi
+
+	# Staged before `tauri build`, because the bundler copies `externalBin` entries and a missing
+	# file fails the build rather than producing a bundle without it.
+	python3 tools/build_watcher.py
+	WATCHER="${REPO_ROOT}/src-tauri/sc2sv-watch-${TRIPLE}"
+	if [ ! -x "${WATCHER}" ]; then
+		echo "the watcher was not staged at ${WATCHER}" >&2
+		exit 1
 	fi
 
 	if [ "$PROFILE" = "release" ]; then
@@ -137,6 +153,15 @@ install -d "${LIB_DIR}" "${BIN_DIR}" "${DESKTOP_DIR}"
 install -m 755 "${BUILT}" "${LIB_DIR}/${APP_NAME}"
 
 TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+
+# The watcher is resolved by absolute path, not by a sibling lookup, because the installer puts
+# both files in the same directory but a packaged install must not be assumed to.
+WATCHER="${REPO_ROOT}/src-tauri/sc2sv-watch-${TRIPLE}"
+if [ -x "${WATCHER}" ]; then
+	install -m 755 "${WATCHER}" "${LIB_DIR}/sc2sv-watch"
+else
+	echo "warning: no watcher at ${WATCHER}; run tools/build_watcher.py" >&2
+fi
 SIDECAR="${REPO_ROOT}/src-tauri/sc2sv-sidecar-${TRIPLE}"
 if [ -f "${SIDECAR}" ]; then
 	install -m 755 "${SIDECAR}" "${LIB_DIR}/sc2sv-sidecar"
@@ -144,9 +169,10 @@ else
 	echo "warning: no sidecar at ${SIDECAR}; replay analysis will not work" >&2
 fi
 
-# The symlink is what puts the app on PATH. The sidecar is looked up next to the real executable
-# (see src-tauri/src/sidecar.rs), so it does not need its own entry.
-ln -sf "${LIB_DIR}/${APP_NAME}" "${BIN_DIR}/${APP_NAME}"
+# The symlink points at the **watcher**, not the window: running the app means "be resident and
+# show a window", which is what the watcher does. Pointing at the GUI would skip game detection
+# entirely and leave a second, unsupervised copy of the window able to start.
+ln -sf "${LIB_DIR}/sc2sv-watch" "${BIN_DIR}/${APP_NAME}"
 
 # `StartupWMClass` must match what the window actually reports, or the desktop will show a
 # second, generic icon for the running app instead of associating it with this entry. The X11
@@ -157,7 +183,7 @@ cat > "${DESKTOP_DIR}/${APP_NAME}.desktop" <<DESKTOP
 Type=Application
 Name=${PRODUCT_NAME}
 Comment=Offline SC2 replay analysis and build-order coach
-Exec=${LIB_DIR}/${APP_NAME}
+Exec=${LIB_DIR}/sc2sv-watch
 Icon=${APP_NAME}
 Terminal=false
 Categories=Game;
@@ -192,5 +218,6 @@ and on PATH as ${APP_NAME}.
   Remove           tools/install_dev.sh --uninstall
 
 The running instance is a watcher: it waits for StarCraft II, starts the window when the game
-does, and quits the window when the game exits. Its own memory use is about 400 KiB.
+does, and quits the window when the game exits. It is a separate 370 KiB binary so that waiting
+costs almost nothing; the window and its web view only exist while you are using them.
 DONE

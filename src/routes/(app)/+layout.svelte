@@ -65,7 +65,7 @@
 <div class="flex min-h-full flex-col">
 	<header class="border-b border-surface-800 bg-surface-900/70">
 		<div class="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
-			<a href="/" class="text-sm font-semibold tracking-tight">sc2-science-vessel</a>
+			<a href="/" class="text-sm font-semibold tracking-tight">SC2 Science Vessel</a>
 			<nav class="flex gap-1" aria-label="Main">
 				{#each nav as item (item.href)}
 					{@const active = page.url.pathname === item.href}

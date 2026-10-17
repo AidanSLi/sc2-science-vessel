@@ -1,122 +1,97 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// What this process was asked to be.
-///
-/// The app is one binary with two roles, chosen by the command line rather than shipped as two
-/// programs. The resident role costs about 400 KiB of memory; the GUI role costs about 260 MiB
-/// because it carries a web view. Shipping them as one file means there is nothing extra to
-/// install and the two can never drift out of step, which is the whole reason for the split
-/// (ADR 0013).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-	/// Supervise the GUI: start it when StarCraft II starts, retire it when the game exits.
-	Watch,
-	/// Be the GUI. Spawned by the watcher, or by hand for development and for tests.
-	Gui,
-}
-
-/// Reads the requested role from the command line.
-///
-/// `--gui` is the only way to get a window directly. Everything else — no arguments, a desktop
-/// entry, an autostart entry, a second click on the app icon — is the watcher, because that is
-/// what those launches mean. An unrecognised argument is ignored rather than fatal, so a desktop
-/// entry that passes a stray `%U` still starts the app.
-///
-/// @returns The role this process should play.
-fn requested_role() -> Role {
-	if std::env::args().any(|argument| argument == "--gui") {
-		return Role::Gui;
-	}
-	Role::Watch
-}
-
-/// Whether this launch is the desktop session's autostart entry.
-///
-/// The autostart entry passes `--watched-by-desktop`, which is the difference between "start
-/// silently and wait for the game" and "the player just clicked this, show them a window".
-///
-/// Detected from the command line rather than from a setting because it describes *this launch*,
-/// not a preference: the same installed executable is both an autostart entry and a menu item.
-///
-/// @returns `true` when the launcher asked for a silent start.
-fn started_by_autostart() -> bool {
-	std::env::args().any(|argument| argument == "--watched-by-desktop")
-}
+//! The GUI half of the app: the window, the web view and everything that needs them.
+//!
+//! The resident half is a separate, dependency-free binary (`sc2sv-watch`, in `watcher-bin/`)
+//! that watches for StarCraft II and starts this program when the game appears. See
+//! `docs/adr/0013-a-watcher-owns-the-web-view.md` for the split and
+//! `docs/adr/0014-the-watcher-is-its-own-executable.md` for why it is two files rather than one.
+//!
+//! ## The hand-off
+//!
+//! When this program is started with **no arguments**, it does not open a window: it hands over
+//! to the watcher and exits. That is what makes the desktop entry Tauri generates work.
+//!
+//! Tauri bundles exactly one binary and writes a `.desktop` file whose `Exec` names it, so a
+//! packaged install's menu item, its autostart entry and its icon all launch *this* program. The
+//! app's supervisor, however, is `sc2sv-watch`. Without a hand-off, clicking the app in the menu
+//! would start a window with nothing supervising it — no game detection, and nothing to retire it
+//! when the game exits.
+//!
+//! So the two behaviours are:
+//!
+//! - no arguments: `exec` the sibling `sc2sv-watch` with no arguments of its own, which it reads
+//!   as "the player clicked the app". `exec` replaces this process rather than parenting a child,
+//!   so the desktop sees the watcher under the same pid it started and no stray window process is
+//!   left behind.
+//! - `--gui`: run the window. This is what the watcher passes when it spawns it.
+//!
+//! Writing a custom `.desktop` template instead was rejected: Tauri emits one file for `deb`,
+//! `rpm` and `appimage` alike and offers no per-format `Exec`, so the alternative is maintaining
+//! three templates and hoping the bundler keeps using them.
 
 fn main() {
+	if hand_over_to_the_watcher() {
+		return;
+	}
 	suppress_broken_webview_renderer();
 	prefer_x11_when_xwayland_is_present();
+	sc2_science_vessel_lib::run();
+}
 
-	match requested_role() {
-		Role::Gui => sc2_science_vessel_lib::run(),
-		Role::Watch => {
-			let code = supervise();
-			// `std::process::exit` rather than returning, because GTK may have installed exit
-			// handlers that would otherwise run in a watcher that never initialised GTK.
-			std::process::exit(code)
-		}
+/// Replaces this process with the watcher when the app was launched as "the app".
+///
+/// The test is *any* argument at all, not `--gui` specifically, and that is deliberate: Tauri's
+/// own `Exec` line passes none, while the watcher always passes `--gui`. An unrecognised argument
+/// therefore still means "someone started the window on purpose", which fails visibly if it is
+/// wrong rather than silently starting a second supervisor.
+///
+/// A missing watcher means this is a development build (`cargo run`, `pnpm tauri dev`, or a
+/// `target/debug` binary), where there is no supervisor to hand over to and no menu entry to
+/// serve. In that case this returns `false` and the window starts normally, which is what a
+/// developer expects from running it directly.
+///
+/// @returns `true` when this process became the watcher and `main` must not start a window.
+fn hand_over_to_the_watcher() -> bool {
+	#[cfg(not(target_os = "linux"))]
+	{
+		// Windows and macOS are not wired to the watcher yet; their bundles also set no
+		// arguments, so handing over to a binary that does not exist there would replace the
+		// working app with a failure.
+		return false;
 	}
-}
 
-/// Runs the resident supervisor, spawning this same executable with `--gui` for the window.
-///
-/// The GUI is started as a child of this process rather than through the desktop's launcher
-/// machinery on purpose: a child inherits the environment already set up above (the renderer and
-/// backend choices), and terminating it is then a plain `kill` with no dependency on D-Bus,
-/// `systemd-run` or a window manager's cooperation.
-///
-/// A launch that finds another watcher already running does not start a second one; it asks the
-/// running one to show the app, which is what clicking the app icon means.
-///
-/// @returns The watcher's exit code.
-fn supervise() -> i32 {
-	// Single instance. The lock is held for the life of the process and released by the kernel
-	// on exit, so a crashed watcher does not leave a stale lock behind the way a pid file would.
-	let Some(_lock) = sc2_science_vessel_lib::single_instance::acquire() else {
-		if sc2_science_vessel_lib::watcher::request_show_of_running_instance() {
-			eprintln!("sc2-science-vessel: already running; asked it to show the window");
-			return 0;
+	#[cfg(target_os = "linux")]
+	{
+		if std::env::args_os().len() > 1 {
+			return false;
 		}
-		// Another process holds the lock but did not answer on the control socket. It is
-		// either wedged or from an older build; refusing to run is better than starting a
-		// second supervisor that would fight it over the same window.
+
+		let Some(own) = std::env::current_exe().ok() else {
+			return false;
+		};
+		let Some(directory) = own.parent() else {
+			return false;
+		};
+		let watcher = directory.join(sc2_science_vessel_lib::autostart::WATCHER_BINARY_NAME);
+		if !watcher.is_file() {
+			return false;
+		}
+
+		// `exec` rather than `spawn` + `wait`: the watcher must survive this process, and a
+		// parent that waits would show up as a second live process for the desktop to manage.
+		use std::os::unix::process::CommandExt;
+		// No arguments: the watcher treats a launch without `--watched-by-desktop` as the player
+		// asking for the app, so it brings up a visible window immediately. Passing the autostart
+		// flag here would make a menu click silently start nothing, which reads as a broken app.
+		let error = std::process::Command::new(&watcher).exec();
 		eprintln!(
-			"sc2-science-vessel: another instance is already running but did not respond; \
-			 quit it before starting another"
+			"sc2-science-vessel: could not hand over to {} ({error}); starting the window alone",
+			watcher.display()
 		);
-		return 1;
-	};
-
-	let intent = if started_by_autostart() {
-		sc2_science_vessel_lib::watcher::StartIntent::Background
-	} else {
-		sc2_science_vessel_lib::watcher::StartIntent::Interactive
-	};
-	sc2_science_vessel_lib::watcher::run(intent, spawn_gui)
-}
-
-/// Starts the GUI as a child process.
-///
-/// The visibility is passed through as an environment variable rather than being left to the
-/// user's `start_hidden` setting, because the watcher knows *why* the GUI is starting and the
-/// setting does not: a GUI spawned because SC2 started must be silent, and one spawned because
-/// the player clicked the app must be visible. `SC2SV_START_HIDDEN` overrides the setting for
-/// this launch only, so choosing "show on start" in settings does not make every game launch
-/// flash a window on screen.
-///
-/// @param start Whether the window should appear immediately.
-/// @returns The child handle, or `None` when this executable's own path cannot be determined.
-fn spawn_gui(start: sc2_science_vessel_lib::watcher::GuiStart) -> Option<std::process::Child> {
-	let executable = std::env::current_exe().ok()?;
-	let hidden = matches!(start, sc2_science_vessel_lib::watcher::GuiStart::Hidden);
-	let child = std::process::Command::new(executable)
-		.arg("--gui")
-		.env("SC2SV_START_HIDDEN", if hidden { "1" } else { "0" })
-		.spawn()
-		.ok()?;
-	eprintln!("sc2-science-vessel: started the app window (pid {})", child.id());
-	Some(child)
+		false
+	}
 }
 
 /// Puts GTK on the X11 backend whenever XWayland is available.
