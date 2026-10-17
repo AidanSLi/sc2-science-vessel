@@ -422,6 +422,18 @@ and there is no extra multiplier to apply.
 - Windows code is written from the documented API but has never been run on Windows: there is no
   Windows machine here and no Windows target links on Linux. Do not describe it as verified, and
   treat the first real Windows run as the verification step.
+- The app is called **SC2 Science Vessel** (`productName`, the window title, and
+  `notify::POPUP_TITLE`), while the binary, the `.deb` package name, and the D-Bus/desktop
+  identity stay `sc2-science-vessel`. Both spellings are load-bearing: KWin matches `WM_CLASS`
+  case-sensitively for the overlay rule, so `startupWMClass`/the rule class must not be renamed to
+  the display name. Consequence of the space in `productName`: the deb and its
+  `usr/share/applications/SC2 Science Vessel.desktop` both carry spaces in the filename (no other
+  `.desktop` on the reference machine does). `desktop-file-validate` passes, and `Exec=` is still
+  the binary name, so this is legal — but do not 'fix' it by renaming the binary, because that is
+  what `Exec`, `externalBin` resolution, and the X11/Win32 window matching all depend on.
+- Package names: `Package: sc2-science-vessel` with `Depends: libayatana-appindicator3-1,
+  libwebkit2gtk-4.1-0, libgtk-3-0` — Debian's names, so a `.deb` will not install on Arch even
+  though the binaries run. Arch gets the AppImage.
 
 ## Updating this file
 
