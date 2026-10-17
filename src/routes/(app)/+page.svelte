@@ -22,7 +22,8 @@
 		{ label: 'Python sidecar: index and parse a replay library', done: true },
 		{ label: 'Metric layer: economy, military, production, army', done: true },
 		{ label: 'Overlay driven by the game clock, per-matchup presets', done: true },
-		{ label: 'Build imports: SpawningTool snapshot and SALT', done: true },
+		{ label: 'Build imports: SpawningTool snapshot', done: true },
+		{ label: 'Build imports: paste a SALT string', done: false },
 		{ label: 'Resident watcher that owns the window lifetime', done: true },
 		{ label: 'Overlay over a fullscreen game (needs a compositor surface)', done: false },
 		{ label: 'Windows overlay and game detection', done: false }
