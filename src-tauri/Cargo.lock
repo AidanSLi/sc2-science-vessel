@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "sc2-science-vessel"
-version = "0.0.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "ashpd",
  "futures-lite",

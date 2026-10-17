@@ -1,6 +1,6 @@
 [project]
 name = "sc2sv-sidecar"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 description = "Replay parsing and metric extraction for sc2-science-vessel. JSON in, JSON out."
 # 3.11 rather than 3.9 because the metrics use `X | Y` type unions at runtime in dataclass
 # fields, and `Self`-style patterns that need 3.11+. The reference venv is 3.14.

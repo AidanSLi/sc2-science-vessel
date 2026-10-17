@@ -58,7 +58,7 @@ jobs:
       - name: Build the frontend
         run: pnpm build
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: sidecar/pyproject.toml
@@ -112,7 +112,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: sidecar/pyproject.toml
@@ -159,7 +159,7 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: sidecar/pyproject.toml
@@ -192,14 +192,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.tag }}
+          # The product name, not the tag: the tag is a version (`v0.1.0-beta.1`) and the release
+          # title should read as the app. `productName` in tauri.conf.json is the single source
+          # for this string on the app side; this is the one place it is repeated.
+          name: SC2 Science Vessel ${{ inputs.tag }}
           draft: ${{ inputs.draft }}
           # Generated on demand rather than maintained by hand: a hand-written changelog in a
           # workflow gets stale, and the commit history is the honest record.
           generate_release_notes: true
           files: artifacts/**
           body: |
-            Beta release of sc2-science-vessel.
+            Beta release of SC2 Science Vessel.
 
             **Linux**: use the `.AppImage` on Arch and other non-Debian distributions (chmod +x,
             then run it). The `.deb` is for Debian and Ubuntu. Neither needs an account, and
