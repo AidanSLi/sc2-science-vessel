@@ -35,20 +35,30 @@
 //! being visible over a fullscreen game at all, and it is paid only at game start — once per
 //! game, for [`POPUP_LIFETIME`].
 //!
-//! ## Windows, where none of the above applies
+//! ## Windows, where only part of the above carries over
 //!
 //! Everything in this module's reasoning is KDE-specific, and it is worth being explicit about
-//! what carries over rather than implying the same measurements exist everywhere:
+//! what carries over rather than implying the same measurements exist everywhere. The facts
+//! below were read out of `notify-rust` **v4.18.2** (the pinned version) rather than assumed;
+//! a comment in this module previously said the opposite of the first two and had to be
+//! corrected once the source was checked.
 //!
-//! - **Urgency does not exist.** `notify-rust` 4.18 routes Windows to a WinRT toast backend
-//!   (`src/windows.rs`), and `Urgency` is a no-op there — there is no Windows notification
-//!   urgency a caller can set through this API. The toast simply appears.
+//! - **`urgency` is not a no-op on Windows**: it is translated. `src/windows.rs` maps
+//!   `Urgency::Critical` to WinRT's `Scenario::Reminder`, which stays on screen until dismissed
+//!   (its comment says so: "stays on screen until dismissed, matching XDG spec"), while
+//!   `Low`/`Normal`/`None` get the default scenario. So the same `.urgency(Critical)` call is
+//!   meaningful on both platforms.
+//! - **`close()` does *not* exist on Windows.** `notify-rust`'s own capability table
+//!   (`src/lib.rs`) shows a blank cell for `NotificationHandle::close` under windows; the Windows
+//!   `NotificationHandle` has `wait_for_action`, `wait_for_response` and `on_close` only. Calling
+//!   `handle.close()` there is not a working dismissal, so the popup's lifetime on Windows is the
+//!   system's to decide (and `Scenario::Reminder` asks it to keep the toast until dismissed).
+//!   The detached close thread is therefore a **no-op on Windows, not a bug**, but it is worth
+//!   knowing that the popup will linger there differently than on Plasma.
 //! - **Whether a toast covers a fullscreen game is not established here.** Windows has its own
 //!   fullscreen behaviour for toasts, and DirectX exclusive fullscreen is a different case again
 //!   from borderless. This was not measurable without a Windows machine, so it is recorded as an
 //!   open question rather than assumed to work.
-//! - **The manual close still works**, and still matters: a Windows toast can be configured by
-//!   the user to persist in the Action Center, and `close()` removes it.
 //!
 //! So on Windows the popup is best-effort in the same sense the overlay is: it is written to the
 //! documented API, and the first run on real hardware is where the behaviour gets confirmed.
@@ -108,6 +118,10 @@ pub fn show_game_start_popup(shortcut: &str) {
     // Plasma ignores the timeout for critical notifications, so the popup is closed by hand.
     // `close()` sends a `CloseNotification` for this notification's id; it returns `()` and
     // reports nothing, so there is no failure to handle here.
+    //
+    // On Windows this is a no-op — `notify-rust` v4.18.2 has no `close` for its WinRT toast
+    // handle (see the module note) — so the thread there is harmless rather than effective. It is
+    // still spawned unconditionally so the two platforms share one code path.
     std::thread::spawn(move || {
         std::thread::sleep(POPUP_LIFETIME);
         handle.close();
