@@ -67,6 +67,10 @@ futures-lite = "2"
 # window to match a changed shortcut against (ADR 0008). Only the connection, property and
 # geometry requests are used — no extension, no events.
 x11rb = { version = "0.13", default-features = false, features = ["allow-unsafe-code"] }
+# `gtk_window()` hands back a `gtk::ApplicationWindow`, and the one operation this app needs on
+# it — `set_override_redirect` — is on GDK rather than GTK. Tauri links GTK 3 through tao, so this
+# declares the same major version and shares the already-loaded library instead of adding one.
+gtk = "0.18"
 
 [profile.release]
 codegen-units = 1

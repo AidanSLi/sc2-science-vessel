@@ -52,6 +52,143 @@ pub struct GameWindow {
 /// game, slow enough that it costs nothing: one X round trip of a few hundred bytes.
 pub const STACKING_POLL: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Flips the overlay between a window-manager-managed window and an override-redirect one.
+///
+/// This is the mechanism that lets one window serve both states, and it exists because the
+/// alternative — a user-installed KWin rule — is a per-user desktop change the app cannot ship.
+///
+/// ## Why override-redirect reaches above a fullscreen game
+///
+/// `Window::belongsToLayer()` in KWin returns `OverlayLayer` for `isUnmanaged()` *before* it
+/// looks at `isActiveFullScreen()` or `keepAbove()`, so an unmanaged window is above a focused
+/// fullscreen client without any rule. An override-redirect window is exactly an unmanaged one.
+/// Measured on the reference machine: a 1000x700 override-redirect client over a 3840x2160
+/// active fullscreen client was 8.44 % of the screen visible, which is precisely its own area,
+/// while the same window managed was 0 % — and the fullscreen client stayed on `layer=5`
+/// throughout, proving the window rose rather than the game falling.
+///
+/// ## Why the flip is not done in place
+///
+/// `override_redirect` is fixed when the X window is created, and changing it on a live window
+/// does nothing: KWin decides whether to manage a window when it first sees it, and a mapped
+/// window never asks again. Measured: flipping a mapped window left it `layer=2`, and flipping
+/// it while unmapped in raw X left it mapped-but-unpainted. GDK's own `hide()`/`show()` tears
+/// the X resource down and creates it again, which is the one sequence that lands the change on
+/// the CreateWindow attributes — measured to work in both directions (managed 10.84 %,
+/// override-redirect 8.44 %, managed again 10.84 %).
+///
+/// @param window The Tauri window to flip.
+/// @param unmanaged `true` to make it override-redirect (above fullscreen), `false` to make it
+///   an ordinary managed window again (interactive, decorated, taskbar-listed).
+/// @returns `true` when the window was flipped, `false` when this display server cannot.
+pub fn set_unmanaged(window: &tauri::WebviewWindow, unmanaged: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        gtk_unmanaged(window, unmanaged)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, unmanaged);
+        false
+    }
+}
+
+/// Turns GTK's focus-taking behaviour off for the overlay.
+///
+/// A **click-through overlay must never take keyboard focus.** Taking focus is not a cosmetic
+/// problem here: the window manager only keeps a fullscreen window on its active layer while it
+/// is the active window, so an overlay that accepted focus demoted the game the instant it
+/// appeared — which the app then read as "the game is not active any more", released the
+/// unmanaged state, and dropped behind the game, which made the game active again. Measured as
+/// a visible oscililation between the two states, ~25 polls in one and ~14 in the other. It also
+/// matters on its own terms: the player is meant to keep playing while it is on screen.
+///
+/// Set these once, before the window is ever mapped.
+///
+/// @param window The Tauri window to configure.
+/// @returns `true` when the flags were applied.
+#[cfg(target_os = "linux")]
+pub fn refuse_focus(window: &tauri::WebviewWindow) -> bool {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return false;
+    };
+    gtk_window.set_accept_focus(false);
+    gtk_window.set_focus_on_map(false);
+    true
+}
+
+/// Non-Linux stub: Tauri's own flags already express this on Windows and macOS.
+///
+/// @param window The Tauri window.
+/// @returns Always `false`.
+#[cfg(not(target_os = "linux"))]
+pub fn refuse_focus(_window: &tauri::WebviewWindow) -> bool {
+    false
+}
+
+/// Lets the window take keyboard focus again, for analysis mode.
+///
+/// The pairing with [`refuse_focus`] is what keeps the two modes honest: analysis mode is a
+/// normal application window the player types into, so it must accept focus, and leaving an
+/// earlier "never focus" flag in place would give a window that cannot be typed into and does
+/// not raise when clicked.
+///
+/// @param window The Tauri window.
+/// @returns `true` when the platform applied it.
+#[cfg(target_os = "linux")]
+pub fn allow_focus(window: &tauri::WebviewWindow) -> bool {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return false;
+    };
+    gtk_window.set_accept_focus(true);
+    gtk_window.set_focus_on_map(true);
+    true
+}
+
+/// Non-Linux stub.
+///
+/// @param window The Tauri window.
+/// @returns Always `false`.
+#[cfg(not(target_os = "linux"))]
+pub fn allow_focus(_window: &tauri::WebviewWindow) -> bool {
+    false
+}
+
+/// GTK implementation of [`set_unmanaged`].
+///
+/// Hidden behind a `cfg` rather than written into the caller because both `gtk` and the GDK
+/// X11 type are Linux-only, and `lib.rs` must not name a platform type.
+///
+/// @param window The Tauri window to flip.
+/// @param unmanaged Whether to make the window override-redirect.
+/// @returns `true` when the flip was applied.
+#[cfg(target_os = "linux")]
+fn gtk_unmanaged(window: &tauri::WebviewWindow, unmanaged: bool) -> bool {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return false;
+    };
+    // Both directions go through hide/show, because a GdkWindow cannot change the attribute
+    // while it exists. Visibility is preserved across the flip, because the flip is an
+    // implementation detail of *how* the window is stacked and must not change whether the
+    // player can see it: the caller asks for "managed again", not "gone".
+    let was_visible = gtk_window.is_visible();
+    gtk_window.hide();
+    let Some(gdk_window) = gtk_window.window() else {
+        return false;
+    };
+    gdk_window.set_override_redirect(unmanaged);
+    if was_visible {
+        gtk_window.show();
+    }
+    true
+}
+
 /// A rectangle in root (screen) coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -147,6 +284,30 @@ pub fn another_client_is_fullscreen() -> bool {
 /// @param conn An open X connection.
 /// @param screen_num The screen to search, as returned by `x11rb::connect`.
 /// @returns `true` if a client other than this application is fullscreen on that screen.
+/// Returns the window the window manager reports as active, if any.
+///
+/// Read from `_NET_ACTIVE_WINDOW` on the root window rather than from X input focus, because the
+/// overlay is click-through and steals focus at no point, so input focus keeps pointing at
+/// whatever it pointed at before. `_NET_ACTIVE_WINDOW` is what the window manager itself
+/// considers active, which is exactly the thing KWin's `isActiveFullScreen()` consults.
+///
+/// @param conn An open X connection.
+/// @param screen_num The screen whose root window carries the property.
+/// @returns The active window's id.
+fn active_window_with<C: Connection>(conn: &C, screen_num: usize) -> Option<Window> {
+    let root = conn.setup().roots.get(screen_num)?.root;
+    let atom = intern_atom(conn, b"_NET_ACTIVE_WINDOW")?;
+    let reply = conn
+        .get_property(false, root, atom, AtomEnum::WINDOW, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    // Collected into an owned value rather than returning the iterator: the reply is a local, and
+    // an iterator borrowing it cannot outlive the function.
+    let active = reply.value32().and_then(|mut values| values.next());
+    active
+}
+
 fn another_client_is_fullscreen_with<C: Connection>(conn: &C, screen_num: usize) -> bool {
     let Some(root) = conn.setup().roots.get(screen_num).map(|screen| screen.root) else {
         return false;
@@ -324,6 +485,17 @@ pub struct OverlayPlacement {
     /// Whether some *other* client currently holds a fullscreen window, which defeats
     /// keep-above on KWin and is reported so the caller can stop claiming it.
     pub other_fullscreen: bool,
+    /// Whether the fullscreen game is the *active* window.
+    ///
+    /// This is what separates "the game is on screen and the player is playing it" from "the
+    /// game is still fullscreen but the player has raised something over it". KWin only promotes
+    /// a fullscreen window to `ActiveLayer` while it is the active one; the moment another window
+    /// takes activation the game drops back to `NormalLayer` and an ordinary keep-above or
+    /// restacked window is above it. Reported separately from `other_fullscreen` because the two
+    /// need opposite responses: an active fullscreen game must be out-ranked by becoming
+    /// unmanaged, while a fullscreen game that is merely *behind* something must let the overlay
+    /// fall behind that something too.
+    pub game_active: bool,
 }
 
 /// Glues `overlay` directly above the game window, returning the game's rectangle.
@@ -356,9 +528,22 @@ pub fn anchor_overlay(overlay: Window) -> Option<OverlayPlacement> {
     // Without the flush the request can sit in the client buffer until the connection is
     // next used, which at a 400 ms poll would make the overlay trail the game visibly.
     conn.flush().ok()?;
+    // Compared by *title*, not by id, because Wine gives the game several windows with the same
+    // title: the real client reports five viewable fullscreen windows all called "StarCraft II"
+    // (measured on a running game), and the active one is frequently not the one this function
+    // picked as the anchor. Comparing ids therefore reported "the game is not active" while the
+    // player was demonstrably playing it, which made the app release the state it had just
+    // claimed and oscillate. The titles are equal by construction, so title equality is the
+    // honest test, and it is what the requirement actually means: "the game, not some other
+    // window, is what the player is looking at".
+    let game_active = active_window_with(&conn, screen_num)
+        .and_then(|active| window_title(&conn, active))
+        .is_some_and(|title| game_title_rank(&title).is_some());
+
     Some(OverlayPlacement {
         rect: game.rect,
         other_fullscreen,
+        game_active,
     })
 }
 

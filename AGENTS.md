@@ -534,6 +534,40 @@ and there is no extra multiplier to apply.
   libwebkit2gtk-4.1-0, libgtk-3-0` — Debian's names, so a `.deb` will not install on Arch even
   though the binaries run. Arch gets the AppImage.
 
+- **A window that accepts focus demotes the fullscreen game it covers.** KWin moves an active
+  fullscreen client from `ActiveLayer` (5) to `NormalLayer` (2) as soon as any other window becomes
+  active. An overlay that takes focus therefore makes the app's own "is the game active" check
+  read `false`, which releases the unmanaged state, which drops the overlay behind the game, which
+  makes the game active again — a visible oscillation (~25 polls one way, ~14 the other). Fix:
+  `platform::refuse_focus()` (`set_accept_focus(false)` + `set_focus_on_map(false)`) must run
+  **before** `show()`, because those flags only affect the focus decision at map time. Analysis
+  mode calls the inverse; a stale refusal would leave it unable to raise or accept a keystroke.
+- **An override-redirect window is the only unprivileged way above an active fullscreen window**,
+  and it is per-window rather than per-user. KWin's `Window::belongsToLayer()` returns
+  `OverlayLayer` for `isUnmanaged()` *before* consulting `isActiveFullScreen()`, whereas
+  `keepAbove` can only reach `AboveLayer`, which is below `ActiveLayer`. Measured over a
+  fullscreen client: managed keep-above **0 %** visible, KWin rule `layer=overlay` 13 %,
+  override-redirect **8.44 %** (exactly its own area). Do not replace this with an always-on-top
+  claim, and do not make the window unmanaged while the game is merely *fullscreen* — only while
+  it is the *active* window, or the overlay will cover whatever the player deliberately raised.
+- **`override_redirect` cannot be changed on a live X window.** Flipping a mapped window is
+  ignored (the window manager decided at first sight), and flipping while unmapped in raw X leaves
+  the window mapped-but-unpainted. Only GDK's own `hide()` → `set_override_redirect()` → `show()`
+  works, because it tears the X resource down and recreates it. Preserve visibility across the
+  flip: the flip is about *stacking*, and must never change whether the player can see the window.
+- **Compare the game window by title, not by X id.** Wine gives the game several viewable
+  fullscreen windows with the same title (five on the reference machine), and the one the
+  compositor reports as active is frequently not the one the anchor finder picked. Comparing ids
+  reported "the game is not active" while the player was demonstrably playing.
+- **The overlay is above an active fullscreen game with no user configuration on any EWMH
+  desktop**, X11 included, because override-redirect is a core X11 concept. The optional KWin rule
+  in `tools/overlay_fullscreen_rule.sh` remains as an escape hatch, not the mechanism.
+- Screenshot a fullscreen overlay check with the game **actually running**: the fake fullscreen
+  client cannot exercise the `game_active` path because it takes X input focus directly, which
+  never updates `_NET_ACTIVE_WINDOW`, so the app reads `game_active=false` against it forever.
+  `/tmp/fs/realapi.sh` prints `_NET_ACTIVE_WINDOW`, input focus, and every `StarCraft`/`SC2`
+  window with markers, which is what makes that claim checkable.
+
 ## Updating this file
 
 Whenever a code convention or hard-won platform constraint is decided or changed, record

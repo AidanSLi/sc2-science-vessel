@@ -59,6 +59,17 @@ pub struct GamePlacement {
 	/// the top rather than pretend it is visible when it is not. Windows reports `false`
 	/// unconditionally — see `platform::windows` for why the concept does not transfer.
 	pub other_fullscreen: bool,
+	/// Whether the fullscreen game is the active window, i.e. the player is actually playing it.
+	///
+	/// The distinction from `other_fullscreen` is what stops the overlay from covering a window
+	/// the player has deliberately raised over a fullscreen game: a fullscreen window that lost
+	/// activation is no longer on the compositor's active layer, so an ordinary managed window
+	/// can be above it, and the overlay has no reason to be unmanaged any more.
+	///
+	/// Windows reports `true` unconditionally: `CLAIM_ALWAYS_ON_TOP` is `false` there and the
+	/// overlay is placed with `SetWindowPos` against the game's own stacking neighbour, so the
+	/// composer's layer model this field describes does not exist.
+	pub game_active: bool,
 }
 
 /// The result of asking the platform to anchor the overlay to the game.
@@ -146,6 +157,7 @@ pub fn anchor_overlay(window: &WebviewWindow) -> AnchorOutcome {
 				height: placement.rect.height,
 			},
 			other_fullscreen: placement.other_fullscreen,
+			game_active: placement.game_active,
 		}),
 		None => AnchorOutcome::NoGame,
 	}
@@ -167,6 +179,85 @@ pub fn anchor_overlay(window: &WebviewWindow) -> AnchorOutcome {
 #[cfg(not(any(target_os = "linux", windows)))]
 pub fn anchor_overlay(_window: &WebviewWindow) -> AnchorOutcome {
 	AnchorOutcome::Unsupported
+}
+
+/// Makes the window unmanaged (override-redirect), or an ordinary managed window again.
+///
+/// This is the one way to put a window above an **active** fullscreen client without asking the
+/// player to install a window-manager rule. KWin's `Window::belongsToLayer()` returns
+/// `OverlayLayer` for an unmanaged window *before* it consults `isActiveFullScreen()`, while a
+/// `keepAbove` toplevel can only reach `AboveLayer`, which is below the fullscreen client's
+/// `ActiveLayer`. Measured on the reference machine: an override-redirect client over an active
+/// fullscreen one was 8.44 % of the screen visible (exactly its own area), and 0 % while managed.
+///
+/// Tauri has no API for this, so it is a Linux/X11 implementation with an honest `false` answer
+/// elsewhere, rather than a no-op that would make the caller believe the overlay is on top.
+///
+/// @param window The window to change.
+/// @param unmanaged `true` to become override-redirect, `false` to be managed again.
+/// @returns `true` when the change was applied.
+pub fn set_unmanaged(window: &WebviewWindow, unmanaged: bool) -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		crate::x11_overlay::set_unmanaged(window, unmanaged)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = (window, unmanaged);
+		false
+	}
+}
+
+/// Stops the window from ever taking keyboard focus.
+///
+/// Required for a click-through overlay: the window manager keeps a fullscreen window on its
+/// active layer only while that window is active, so an overlay that accepted focus would demote
+/// the game it is drawn over — and the app reads "the game is no longer active" as "stop
+/// out-ranking it", which drops the overlay behind the game and starts the cycle again.
+///
+/// @param window The window to make non-focusable.
+/// @returns `true` when the platform applied it.
+pub fn refuse_focus(window: &WebviewWindow) -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		crate::x11_overlay::refuse_focus(window)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = window;
+		false
+	}
+}
+
+/// Lets the window take keyboard focus again, for analysis mode.
+///
+/// The counterpart of [`refuse_focus`]: analysis mode is an ordinary application window the
+/// player clicks and types into, so a stale "never take focus" flag would make it feel broken —
+/// it would neither raise on click nor accept a keystroke.
+///
+/// @param window The window to make focusable.
+/// @returns `true` when the platform applied it.
+pub fn allow_focus(window: &WebviewWindow) -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		crate::x11_overlay::allow_focus(window)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = window;
+		false
+	}
+}
+
+/// Whether this platform can put a window above an active fullscreen client at all.
+///
+/// Reported separately from [`overlay_supported`] because it decides a different thing: a
+/// platform that can anchor but not out-rank a fullscreen window must yield rather than keep
+/// claiming a position it cannot hold.
+///
+/// @returns `true` on Linux, where override-redirect reaches the compositor's top layer.
+pub fn can_outrank_fullscreen() -> bool {
+	cfg!(target_os = "linux")
 }
 
 /// Linux implementation, delegating to the X11 module.

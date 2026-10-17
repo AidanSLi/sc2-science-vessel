@@ -126,6 +126,7 @@ pub fn anchor_overlay(window: &WebviewWindow) -> AnchorOutcome {
 			return AnchorOutcome::Anchored(GamePlacement {
 				rect: game.rect,
 				other_fullscreen: false,
+				game_active: true,
 			});
 		}
 		Ok(sibling) => sibling,
@@ -153,6 +154,9 @@ pub fn anchor_overlay(window: &WebviewWindow) -> AnchorOutcome {
 		// exists for Linux, where a focused fullscreen client genuinely outranks a keep-above
 		// window; reporting a fabricated value here would make the watcher's decision meaningless.
 		other_fullscreen: false,
+		// Likewise: `SetWindowPos` restacking is relative to the game whatever else is on screen,
+		// so there is no active-layer concept to consult.
+		game_active: true,
 	})
 }
 

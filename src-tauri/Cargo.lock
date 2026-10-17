@@ -3333,6 +3333,7 @@ version = "0.1.0-beta.1"
 dependencies = [
  "ashpd",
  "futures-lite",
+ "gtk",
  "notify-rust",
  "raw-window-handle",
  "serde",

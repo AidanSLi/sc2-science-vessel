@@ -116,6 +116,7 @@ fn set_window_mode(mode: WindowMode) {
 #[tauri::command]
 fn set_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result<WindowMode> {
     let target = match mode.as_str() {
+        _ if PINNED_OVERLAY.load(std::sync::atomic::Ordering::SeqCst) => WindowMode::Overlay,
         "overlay" => WindowMode::Overlay,
         _ => WindowMode::Analysis,
     };
@@ -144,6 +145,7 @@ fn set_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result
 #[tauri::command]
 fn reveal_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result<WindowMode> {
     let target = match mode.as_str() {
+        _ if PINNED_OVERLAY.load(std::sync::atomic::Ordering::SeqCst) => WindowMode::Overlay,
         "overlay" => WindowMode::Overlay,
         _ => WindowMode::Analysis,
     };
@@ -361,6 +363,12 @@ fn apply_window_mode(
             window.set_decorations(false)?;
             window.set_shadow(false)?;
             window.set_skip_taskbar(true)?;
+            // Before the show, not after it: `set_accept_focus(false)` only influences whether a
+            // window takes focus *when it is mapped*, so setting it afterwards leaves the map
+            // itself having stolen activation from the game. Measured: with the call after
+            // `show()` the overlay became `_NET_ACTIVE_WINDOW` and the fullscreen game was
+            // demoted, which the stacking watcher then read as "the game is not active".
+            platform::refuse_focus(&window);
             if should_show {
                 window.show()?;
             }
@@ -389,6 +397,15 @@ fn apply_window_mode(
             // "above the game", and a hidden window has nothing to stack. On a platform with no
             // window-tracking API the watcher starts, reports `Unsupported` once, and exits.
             if should_show {
+                // A window left override-redirect by a previous overlay session must be managed
+                // again before the watcher measures anything: an unmanaged window is not
+                // tracked by the window manager, so it cannot be restacked or resized and
+                // would look like a frozen rectangle over the game.
+                release_unmanaged(&window);
+            // Analysis mode is an ordinary window the player clicks and types into, so it must
+            // accept focus again. Overlay mode turns focus off (see the Overlay branch), and a
+            // flag left set would make this mode feel broken rather than merely unfocused.
+            platform::allow_focus(&window);
                 watch_overlay_stacking(window.clone());
             }
         }
@@ -397,6 +414,11 @@ fn apply_window_mode(
             // stacking and keep-above state several times a second, and would fight the mode
             // change if it kept running.
             OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            // The overlay may have gone override-redirect to sit above an active fullscreen
+            // game. In analysis mode the window must be an ordinary managed window again: an
+            // unmanaged one gets no decorations, no taskbar entry, no focus and no resizing,
+            // so it could not be clicked or typed into at all.
+            release_unmanaged(&window);
             // The interactive floor, applied before the resize so the window cannot be briefly
             // smaller than the pages it is about to show. The upper bound is a safety net
             // rather than a design choice: a window taller than the work area cannot be moved
@@ -504,9 +526,25 @@ fn desired_keep_above(other_fullscreen: bool, game_anchored: bool) -> bool {
 fn apply_overlay_stacking(
     window: &WebviewWindow,
     other_fullscreen: bool,
+    game_active: bool,
     game_anchored: bool,
     keep_above: bool,
 ) -> bool {
+    // A fullscreen client can only be out-ranked by becoming unmanaged. Doing that while the
+    // game is windowed would be worse than useless: an unmanaged window cannot be restacked
+    // behind a window the player raises, which is the behaviour that makes the windowed case
+    // feel right. So the claim is tied to the fullscreen state rather than taken once.
+    // `other_fullscreen` alone is not enough: it stays true while the game is fullscreen even
+    // after the player raises something over it, and becoming unmanaged then would cover the
+    // window they just raised. Only an *active* fullscreen game needs out-ranking.
+    if other_fullscreen && game_active && game_anchored && platform::can_outrank_fullscreen() {
+        if claim_unmanaged(window) {
+            // Showing the flipped window is the caller's job — see `watch_overlay_stacking`.
+        }
+    } else {
+        release_unmanaged(window);
+    }
+
     let next = desired_keep_above(other_fullscreen, game_anchored);
     if next != keep_above {
         if next {
@@ -572,6 +610,7 @@ fn watch_overlay_stacking(window: WebviewWindow) {
                         keep_above = apply_overlay_stacking(
                             &window,
                             placement.other_fullscreen,
+                            placement.game_active,
                             true,
                             keep_above,
                         );
@@ -588,7 +627,8 @@ fn watch_overlay_stacking(window: WebviewWindow) {
                     // unrelated windows while the player is doing something else. The watcher
                     // stays alive because the game is expected to come back.
                     platform::AnchorOutcome::NoGame => {
-                        keep_above = apply_overlay_stacking(&window, false, false, keep_above);
+                        keep_above =
+                            apply_overlay_stacking(&window, false, false, false, keep_above);
                         last_anchor = None;
                     }
                     // This platform cannot track another application's window at all. Stop rather
@@ -840,6 +880,10 @@ fn set_start_hidden(app: tauri::AppHandle, enabled: bool) -> Result<bool, String
         if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
             let _ = window.hide();
             OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            // Hiding a window that is override-redirect leaves it unmanaged when it comes
+            // back, and this setting is exactly "never show it unasked". Restoring management
+            // here means the next reveal behaves like an ordinary window.
+            release_unmanaged(&window);
         }
     }
     Ok(enabled)
@@ -1025,6 +1069,16 @@ pub fn run() {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(1500));
+                    // Keep the affordance from being undone by the frontend a second later: the
+                    // frontend decides the mode from the client API on every poll, and a value
+                    // left set means "stay in overlay mode" no matter what the polling says.
+                    // Without this the only way to inspect the overlay's real compositor
+                    // placement is to be in a live match, which cannot be scripted.
+                    if std::env::var_os("SC2SV_PIN_OVERLAY")
+                        .is_some_and(|value| value != "0")
+                    {
+                        PINNED_OVERLAY.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     // `Shown` because the point of the affordance is to see the overlay.
                     if let Err(err) =
                         apply_window_mode(&handle, WindowMode::Overlay, Visibility::Shown)
@@ -1284,6 +1338,68 @@ fn bind_overlay_shortcut_via_portal(app: &tauri::AppHandle) -> bool {
 /// track another window, not a `cfg`.
 static OVERLAY_WATCH_RUNNING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the window is currently override-redirect (unmanaged), i.e. above a fullscreen game.
+///
+/// Process-wide because it describes one window, and the two things that change it — the mode
+/// switch and the stacking watcher — are on different threads. Reading and writing it through an
+/// atomic is what stops them from each flipping it and leaving the window in whichever state won
+/// the race.
+static WINDOW_UNMANAGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the development affordance has locked the window into overlay mode.
+///
+/// Only ever set from `SC2SV_START_WITH_OVERLAY` + `SC2SV_PIN_OVERLAY`, which exist so the
+/// overlay's real compositor placement can be inspected outside of a live match. It is read by
+/// [`set_window_mode_command`], which otherwise lets the frontend's automatic decision win.
+static PINNED_OVERLAY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Makes the window an ordinary managed window again, if it is not one already.
+///
+/// Every transition *out* of the fullscreen-overlay state calls this. It is deliberately
+/// idempotent and cheap when there is nothing to do, because it is called from paths that run
+/// on every poll and from paths that run once per mode change.
+///
+/// @param window The window to restore.
+fn release_unmanaged(window: &WebviewWindow) {
+    use std::sync::atomic::Ordering;
+    if WINDOW_UNMANAGED.swap(false, Ordering::SeqCst) {
+        platform::set_unmanaged(window, false);
+    }
+}
+
+/// Makes the window override-redirect so it can sit above an active fullscreen client.
+///
+/// Returns whether the window is now unmanaged, so the caller does not have to guess: on a
+/// display server that cannot do this the answer is `false` and the caller keeps its ordinary
+/// keep-above behaviour instead of believing it is on top when it is not.
+///
+/// @param window The window to raise above a fullscreen client.
+/// @returns `true` when the window is now override-redirect.
+fn claim_unmanaged(window: &WebviewWindow) -> bool {
+    use std::sync::atomic::Ordering;
+    if WINDOW_UNMANAGED.load(Ordering::SeqCst) {
+        return true;
+    }
+    if platform::set_unmanaged(window, true) {
+        WINDOW_UNMANAGED.store(true, Ordering::SeqCst);
+        // Both flags are window-manager properties that a hide/show cycle drops, and this
+        // window is being re-shown precisely while the player is mid-game. Losing
+        // click-through here would put an invisible 380x300 rectangle over the game that eats
+        // every click aimed at whatever is underneath it.
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.set_always_on_top(true);
+        eprintln!(
+            "the game is running fullscreen, so the overlay went above it as an unmanaged \
+             window (see docs/adr/0015-raise-the-overlay-with-override-redirect.md)"
+        );
+        true
+    } else {
+        false
+    }
+}
 
 /// Window size in analysis mode, in logical pixels.
 ///
