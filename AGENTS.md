@@ -95,6 +95,46 @@
   exact `StarCraft II`/`StarCraft 2` beats a prefix match like `StarCraft II — Dolphin`, which
   otherwise competes with the real game — and ties break on area.
 
+## The process model: one binary, two roles
+
+- **The app is a watcher that owns a GUI child, not a resident web view.** Measured on the
+  reference machine, idle and hidden: a resident Tauri app costs **259 MiB PSS** across three
+  processes (`sc2-science-vessel` 123, `WebKitWebProcess` 101, `WebKitNetworkProcess` 34), where
+  a dependency-free watcher costs **0.4 MiB**. That is ~600x, and no arrangement of a web view
+  closes the gap. `main` picks the role from the command line: no arguments (or any argument
+  other than `--gui`) is the watcher; `--gui` is the window. See ADR 0013.
+- **The user's vocabulary is load-bearing: the *game* is the SC2 process, a *match* is one game
+  inside it.** The watcher detects the game, by process name, and the GUI detects a match, from
+  the client API's screen list. Do not conflate them: "is SC2 running" cannot be asked of the
+  client API (it does not exist until SC2 starts), and "is a match being played" should not be
+  guessed from process names when the client reports it exactly.
+- **The watcher retires a GUI only if it started it.** `GuiOrigin::{Game,Player}` exists because
+  the first version retired any GUI whenever SC2 was absent, so launching the app with no game
+  open produced a window that vanished on the next poll. A player-started GUI survives the game
+  exiting; a game-started one is killed with it, which is what returns the 259 MiB.
+- **The GUI is spawned hidden when the game starts, and revealed by the match.** A game starting
+  is not a match starting: the player is in the menus, and a window there would be the app
+  interrupting them. `SC2SV_START_HIDDEN` carries that decision from the watcher to the child,
+  because the watcher knows *why* the GUI is starting and the `start_hidden` setting does not.
+  An absent variable means the setting applies (a shell launch, `tauri dev`).
+- **Discovery and reveal are different from mode changes.** `reveal_window_mode_command` shows
+  the window; `set_window_mode_command` does not. The match boundary uses the first; a manual
+  mode change uses the second. Conflating them is the bug that pops the window back up over a
+  player who hid it mid-match.
+- **`tauri build --debug --no-bundle` embeds the frontend; `cargo build` does not.** A
+  cargo-built binary points its web view at `localhost:1420`, so with no Vite running the window
+  shows `Could not connect to localhost: Connection refused` and — this is the expensive part —
+  the frontend never runs at all, so `/ui` is never polled, the mode never changes, and a
+  lifecycle test silently passes while testing nothing. `tools/install_dev.sh` builds through
+  `pnpm tauri build`, which is the only command that produces a runnable artefact. Check with
+  `strings <binary> | grep -c localhost:1420` — 0 when embedded.
+- **The watcher's control channel and the GUI's are separate ports** (`watcher`, `gui`), each
+  published under `$XDG_RUNTIME_DIR`, so a second launch reaches the right process and neither
+  can read the other's file.
+- **Single-instance is a lock, not a pid file.** `std::fs::File::try_lock` (stable since Rust
+  1.89) is released by the kernel on any exit including SIGKILL, so there is no stale state to
+  detect and "is it running" is one atomic operation.
+
 ## Testing
 
 - Any metric implementation lands with a fixture test against a real replay from

@@ -27,9 +27,14 @@ use tauri::{Emitter, Manager, WebviewWindow};
 
 #[cfg(target_os = "linux")]
 mod portal_shortcut;
+mod control;
+mod game_process;
+pub mod gui_control;
+pub mod watcher;
 mod game_watch;
 mod notify;
 mod platform;
+pub mod single_instance;
 mod settings;
 mod sidecar;
 #[cfg(target_os = "linux")]
@@ -123,6 +128,31 @@ fn set_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result
     Ok(target)
 }
 
+/// Applies a mode the app chose for itself *and* reveals the window.
+///
+/// Distinct from [`set_window_mode_command`], which deliberately leaves visibility alone. The
+/// difference is who asked: a player pressing Escape wants the view to change without the
+/// window reappearing, whereas the match boundary is exactly the moment the user asked the app
+/// to put itself on screen — ``upon match start, the app is now visible and in its build order
+/// state'' and ``upon match end, the app now transitions to its analysis state''.
+///
+/// The frontend only calls this when the mode actually changed, so a player who hid the window
+/// mid-match is not overruled by every subsequent poll: hiding does not change the mode, so
+/// nothing calls back in.
+///
+/// @param app The running app handle.
+/// @param mode The mode to switch to.
+/// @returns The mode now in effect.
+#[tauri::command]
+fn reveal_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result<WindowMode> {
+    let target = match mode.as_str() {
+        "overlay" => WindowMode::Overlay,
+        _ => WindowMode::Analysis,
+    };
+    apply_window_mode(&app, target, Visibility::Shown)?;
+    Ok(target)
+}
+
 /// Reads the window's current mode, so the frontend can render the matching view.
 ///
 /// The frontend cannot infer this: the hotkey changes the mode without any frontend
@@ -211,7 +241,7 @@ fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 ///
 /// @param app The running app handle.
 fn warm_or_reveal_main_window(app: tauri::AppHandle) {
-    let start_hidden = Settings::load(&app).start_hidden;
+    let start_hidden = start_hidden_for_this_launch(&app);
     std::thread::spawn(move || {
         let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
             return;
@@ -222,6 +252,27 @@ fn warm_or_reveal_main_window(app: tauri::AppHandle) {
 
         if !start_hidden {
             let _ = window.show();
+        }
+    });
+}
+
+/// Listens for requests from the watcher to reveal this window.
+///
+/// The watcher spawns the GUI hidden when StarCraft II starts, because a game starting is not a
+/// match starting (see `watcher`). Anything that later decides the window should be visible —
+/// the player clicking the app icon again, or the watcher itself — reaches the GUI through
+/// this, because the GUI is a separate process and cannot be told directly.
+///
+/// The listener makes the window visible in the mode it already has. It deliberately does not
+/// pick a mode: whether the window is a guide or an analysis view follows the client API's
+/// screen list (ADR 0010), and a second process able to override that would be a second source
+/// of truth for the same fact.
+///
+/// @param app The running app handle.
+fn start_gui_listener(app: tauri::AppHandle) {
+    gui_control::start(move || {
+        if let Err(err) = show_window(&app) {
+            eprintln!("could not show the window for a watcher request ({err})");
         }
     });
 }
@@ -583,6 +634,31 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Whether this particular launch should start with no visible window.
+///
+/// The stored setting answers "what should happen when I double-click the app", but the same
+/// executable is also started by the watcher for reasons the player did not just express:
+///
+/// - **SC2 started** → the GUI must be silent, because a match has not begun and the player is
+///   still in the menus. A window appearing here would be the app interrupting them.
+/// - **the player clicked the app icon** → the window must be visible, whatever the setting says,
+///   because clicking an app and getting nothing is not a reasonable outcome.
+///
+/// The watcher knows which of those it is, so it passes `SC2SV_START_HIDDEN` and this function
+/// prefers it over the stored setting. Only the watcher-visible polarity is overridden: an
+/// absent variable means the app was started some other way (a shell, `tauri dev`, a debugger)
+/// and the setting should apply as normal.
+///
+/// @param app The running app handle.
+/// @returns `true` when this launch should not show a window yet.
+fn start_hidden_for_this_launch(app: &tauri::AppHandle) -> bool {
+    match std::env::var("SC2SV_START_HIDDEN").ok().as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => Settings::load(app).start_hidden,
+    }
+}
+
 /// Shows the main window if the frontend has not done so within [`MAIN_WINDOW_WATCHDOG`].
 ///
 /// The main window is declared `visible: false` so it cannot be seen before the frontend has
@@ -599,7 +675,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 ///
 /// @param app The running app handle.
 fn arm_main_window_watchdog(app: tauri::AppHandle) {
-    if Settings::load(&app).start_hidden {
+    if start_hidden_for_this_launch(&app) {
         return;
     }
     std::thread::spawn(move || {
@@ -620,7 +696,7 @@ fn arm_main_window_watchdog(app: tauri::AppHandle) {
 /// the window on its own. The player's hotkey is the only thing that may bring it up.
 #[tauri::command]
 fn frontend_ready(app: tauri::AppHandle) {
-    if Settings::load(&app).start_hidden {
+    if start_hidden_for_this_launch(&app) {
         return;
     }
     show_main_window(&app);
@@ -879,9 +955,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            // No extra arguments: the app knows it is resident from its own settings, so the
-            // login launch must not need a flag to behave correctly.
-            None,
+            // The login launch must be silent: the player is logging in, not asking for a
+            // window. This flag is how `main` tells the two launches apart, because the same
+            // installed executable is both an autostart entry and a menu item and nothing else
+            // distinguishes them (ADR 0013).
+            Some(vec!["--watched-by-desktop"]),
         ))
         // Reveals the main window once the frontend has painted (see `reveal_main_window`).
         .invoke_handler(tauri::generate_handler![
@@ -889,6 +967,7 @@ pub fn run() {
             toggle_window,
             get_window_mode,
             set_window_mode_command,
+            reveal_window_mode_command,
             overlay_supported_command,
             get_settings,
             set_overlay_shortcut,
@@ -926,6 +1005,10 @@ pub fn run() {
             // the frontend because the window is hidden between games and a hidden WebKitGTK
             // widget has its page timers suspended — see `game_watch`.
             game_watch::watch_for_game_start(app.handle().clone());
+
+            // Answer show requests from the watcher, so a second launch or the game starting
+            // can reveal a GUI that was spawned hidden. See `gui_control`.
+            start_gui_listener(app.handle().clone());
 
             // The tray icon, which is how a resident app is reached when its window is hidden.
             // Without it the app could be running invisibly with no way to quit it short of a

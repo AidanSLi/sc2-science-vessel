@@ -1,0 +1,231 @@
+//! Detects whether the StarCraft II *game* is running, as distinct from whether a *match* is
+//! being played.
+//!
+//! ## Why this is a separate question from the match
+//!
+//! The user's vocabulary separates two things that a lazier design would conflate:
+//!
+//! - **The game** is the StarCraft II process. It starts when the player launches SC2 from
+//!   Battle.net and exits when they quit. It is running for the menus, the lobby, a match and
+//!   the score screen alike.
+//! - **The match** is one game inside SC2. It starts when the loading screen clears and the
+//!   3-2-1 countdown begins, and ends when the player presses the score screen button.
+//!
+//! The watcher needs the first, because paying for a web view is only justified while SC2 is
+//! running at all. The window mode needs the second, which comes from the client API's screen
+//! list (ADR 0010). Only one of the two is a polling problem, and it is this one: the client
+//! API does not exist until SC2 starts, so "is SC2 running" cannot be asked of it.
+//!
+//! ## How the process is recognised
+//!
+//! By the executable's reported name, matched case-insensitively against a small set of
+//! spellings, because SC2 runs under Wine and the name that reaches the kernel depends on how
+//! the launcher started it. Observed on the reference machine
+//! (`~/Faugus/battlenet`, a Wine prefix started by Faugus):
+//!
+//! - the launcher is Battle.net, whose process is `Battle.net.exe`;
+//! - the game proper is `StarCraft II.exe`, but Wine also spawns `StarCraft II Editor.exe` and
+//!   versioned copies under `Versions/Base*/`;
+//! - the editor must **not** count, because opening the Galaxy editor is not playing.
+//!
+//! Matching is deliberately *not* by window title: the window title poller already exists for
+//! anchoring, but a title is only present once the game has created a window, which is later
+//! than the process itself — and the watcher's whole job is to be early enough that the web
+//! view is already warm when a match starts.
+//!
+//! ## Cost
+//!
+//! One directory read of `/proc` per poll. The caller polls about once a second, so this is a
+//! few hundred `readlink` calls a second at worst; measured on the reference machine at 0.00%
+//! of a core (see `docs/adr/0013-a-watcher-owns-the-web-view.md`).
+
+/// Names that count as "StarCraft II is running", lowercased without the extension.
+///
+/// `starcraft ii` covers `StarCraft II.exe` and the versioned `StarCraft II.exe` under
+/// `Versions/Base*`. `starcraft 2` is accepted as well because older shortcuts and Wine
+/// wrappers use it, and the difference is invisible to a player.
+const GAME_PROCESS_NAMES: [&str; 2] = ["starcraft ii", "starcraft 2"];
+
+/// Name fragments that disqualify a process even when it also matches a game name.
+///
+/// The editor ships in the same directory and shares the game's name prefix, so it would
+/// otherwise be indistinguishable by name alone.
+const DISQUALIFYING_FRAGMENTS: [&str; 2] = ["editor", "launcher"];
+
+/// The maximum length of the kernel's `comm` field, in bytes.
+///
+/// Linux stores at most 15 bytes plus a terminator, so a longer executable name arrives
+/// truncated and the tail is simply gone. That is not a Wine quirk to work around; it is how
+/// `/proc/<pid>/comm` has always behaved, and it is why comparison cannot be equality against a
+/// full filename.
+const COMM_MAX_BYTES: usize = 15;
+
+/// Truncates a name the way the kernel does when filling `comm`.
+///
+/// Byte-oriented because that is what the kernel does, but cut on a character boundary so a
+/// non-ASCII name cannot produce invalid UTF-8. Process names in practice are ASCII; this is
+/// defensive rather than load-bearing.
+///
+/// @param name A process name.
+/// @returns The prefix the kernel would report.
+fn kernel_comm(name: &str) -> &str {
+	if name.len() <= COMM_MAX_BYTES {
+		return name;
+	}
+	let mut end = COMM_MAX_BYTES;
+	while end > 0 && !name.is_char_boundary(end) {
+		end -= 1;
+	}
+	&name[..end]
+}
+
+/// Normalises a process name for comparison: lowercased, `.exe` removed, whitespace trimmed.
+///
+/// Wine and Linux disagree about how much of the filename survives, so comparison happens on
+/// the stem rather than trusting any one source to be consistent.
+///
+/// @param name A process name as reported by the operating system.
+/// @returns A comparable stem, e.g. `starcraft ii`.
+fn normalise_process_name(name: &str) -> String {
+	let lowered = name.trim().to_ascii_lowercase();
+	let stem = lowered.strip_suffix(".exe").unwrap_or(&lowered);
+	stem.trim().to_string()
+}
+
+/// Reports whether a process name looks like the StarCraft II game.
+///
+/// Exposed for tests, which is the only way to exercise the name matching without a real game
+/// running. The disqualifying check runs first so `StarCraft II Editor.exe` cannot match by
+/// accident even if a future name list grows a prefix that would otherwise admit it.
+///
+/// @param name A process name as reported by the operating system.
+/// @returns `true` when the process is the game rather than the editor, launcher or anything
+///   else.
+pub fn is_game_process_name(name: &str) -> bool {
+	let normalised = normalise_process_name(name);
+	if normalised.is_empty() {
+		return false;
+	}
+	if DISQUALIFYING_FRAGMENTS
+		.iter()
+		.any(|fragment| normalised.contains(fragment))
+	{
+		return false;
+	}
+	// Two spellings of the same process are legitimate: the full name, and what the kernel
+	// actually hands back for it. `StarCraft II.exe` becomes `StarCraft II.ex` in `comm`, so
+	// accepting only the full name would never match a real running game — which is precisely
+	// the bug this comparison had before a test caught it.
+	GAME_PROCESS_NAMES.iter().any(|candidate| {
+		if normalised == *candidate {
+			return true;
+		}
+		let with_extension = format!("{candidate}.exe");
+		normalised == kernel_comm(&with_extension)
+	})
+}
+
+/// Reports whether the StarCraft II process is running right now.
+///
+/// On Linux this walks `/proc` and compares the `comm` field, which is the kernel's truncated
+/// view of the executable name. Truncation is why matching is by name *stem* rather than exact
+/// equality with a full filename: `comm` is capped at 15 bytes, so `StarCraft II.exe` arrives
+/// as `StarCraft II.ex` and a strict comparison would never match. Normalising strips the
+/// partial extension away, and the remaining `StarCraft II` is well inside the limit.
+///
+/// A game launched through a Wine prefix still appears here, because Wine runs the game as an
+/// ordinary Linux process — it is a PE loaded by a Linux binary, not a virtual machine.
+///
+/// @returns `true` when SC2 is running.
+pub fn game_is_running() -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		let Ok(entries) = std::fs::read_dir("/proc") else {
+			return false;
+		};
+		for entry in entries.flatten() {
+			// Only numeric directories are processes; everything else in /proc is not.
+			if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
+				continue;
+			}
+			let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+				continue;
+			};
+			if is_game_process_name(&comm) {
+				return true;
+			}
+		}
+		false
+	}
+
+	#[cfg(not(target_os = "linux"))]
+	{
+		// Windows and macOS get their own implementation when the watcher is ported there; the
+		// task list is reported as `false` rather than guessed, so the watcher stays in its idle
+		// state instead of spawning web views it cannot retire.
+		false
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn recognises_the_game_under_its_install_directory_name() {
+		assert!(is_game_process_name("StarCraft II.exe"));
+		assert!(is_game_process_name("StarCraft II"));
+		assert!(is_game_process_name("starcraft ii.exe"));
+		assert!(is_game_process_name("StarCraft 2.exe"));
+	}
+
+	#[test]
+	fn recognises_the_truncated_name_the_kernel_reports() {
+		// `comm` is capped at 15 bytes, so this is what a real /proc entry contains.
+		// `StarCraft II.exe` is 17 bytes; the kernel keeps the first 15.
+		assert!(is_game_process_name("StarCraft II.ex"));
+		assert!(is_game_process_name("StarCraft II"));
+		assert_eq!(kernel_comm("starcraft ii.exe"), "starcraft ii.ex");
+	}
+
+	#[test]
+	fn short_names_are_not_truncated() {
+		assert_eq!(kernel_comm("starcraft ii"), "starcraft ii");
+		assert_eq!(kernel_comm("a"), "a");
+	}
+
+	#[test]
+	fn the_editor_is_not_the_game() {
+		assert!(!is_game_process_name("StarCraft II Editor.exe"));
+		assert!(!is_game_process_name("StarCraft II Editor_x64.exe"));
+	}
+
+	#[test]
+	fn the_launcher_is_not_the_game() {
+		assert!(!is_game_process_name("Battle.net Launcher.exe"));
+		assert!(!is_game_process_name("Battle.net.exe"));
+	}
+
+	#[test]
+	fn unrelated_processes_do_not_match() {
+		assert!(!is_game_process_name("sc2-science-vessel"));
+		assert!(!is_game_process_name("konsole"));
+		assert!(!is_game_process_name(""));
+		assert!(!is_game_process_name("   "));
+	}
+
+	#[test]
+	fn a_name_merely_containing_the_game_name_does_not_match() {
+		// Guards the exactness of the comparison: a hypothetical helper called
+		// `StarCraft II Helper` must not be treated as the game itself.
+		assert!(!is_game_process_name("StarCraft II Helper.exe"));
+	}
+
+	#[test]
+	fn detection_is_answerable_without_a_game_running() {
+		// Not asserting `false` — the test suite may run while a game happens to be open. The
+		// contract under test is that this always answers rather than panicking on an
+		// unreadable /proc.
+		let _ = game_is_running();
+	}
+}

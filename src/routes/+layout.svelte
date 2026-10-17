@@ -20,7 +20,7 @@
 	import { get } from 'svelte/store';
 	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
 	import { decideMode } from '#lib/game-mode';
-	import { initWindowMode, setWindowMode, windowMode } from '#lib/window-mode';
+	import { initWindowMode, revealWindowMode, windowMode } from '#lib/window-mode';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
 	import '../app.css';
 
@@ -49,8 +49,14 @@
 		const mode = decideMode(live);
 
 		// `null` means "cannot tell what is happening, leave the view alone" — see `decideMode`.
-		if (mode && mode !== get(windowMode)) {
-			await setWindowMode(mode);
+		if (!mode) return;
+
+		// The transition, not the state, is what reveals the window. A match starting or ending
+		// is the one moment the user asked the app to put itself on screen; every poll after it
+		// finds the mode already applied and therefore does nothing, which is what stops the app
+		// from fighting a player who hid it mid-match.
+		if (mode !== get(windowMode)) {
+			await revealWindowMode(mode);
 		}
 	}
 

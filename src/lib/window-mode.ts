@@ -120,6 +120,32 @@ export async function setWindowMode(next: WindowMode): Promise<WindowMode> {
 }
 
 /**
+ * Switches the window's mode *and* puts the window on screen.
+ *
+ * This is the automatic counterpart to {@link setWindowMode}, for the two moments the user
+ * asked the app to put itself in front of them: the start of a match (build-order guide) and
+ * the end of one (analysis view). Those are the only callers; everything else uses
+ * {@link setWindowMode} and leaves visibility to the hotkey.
+ *
+ * Kept as a separate function rather than a `reveal` flag on the other one because the two have
+ * opposite semantics for a window the player hid, and a boolean argument at the call site would
+ * make that difference easy to pass by accident.
+ *
+ * @param next The mode to switch to.
+ * @returns The mode the shell reports the window is now in.
+ */
+export async function revealWindowMode(next: WindowMode): Promise<WindowMode> {
+	if (!isTauri()) return get(mode);
+
+	const { invoke } = await import('@tauri-apps/api/core');
+	const applied = parseWindowMode(
+		await invoke<unknown>('reveal_window_mode_command', { mode: next })
+	);
+	if (applied) mode.set(applied);
+	return applied ?? get(mode);
+}
+
+/**
  * Shows or hides the window, exactly as the global hotkey does.
  *
  * Exists so the in-app control and the global hotkey run the *same* Rust function rather than
