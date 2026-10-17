@@ -165,6 +165,16 @@
 - **Single-instance is a lock, not a pid file.** `std::fs::File::try_lock` (stable since Rust
   1.89) is released by the kernel on any exit including SIGKILL, so there is no stale state to
   detect and "is it running" is one atomic operation.
+- **Never run `tools/install_dev.sh` with `sudo`.** It installs into `~/.local` for the current
+  user, so as root it writes to `/root/.local`, where no login session looks. Modern rustup also
+  puts the toolchain in the *user's* `~/.cargo/bin`, which root's `PATH` does not have, so
+  `sudo tools/install_dev.sh` dies at the first `rustc` with `rustc: command not found` — a
+  message that names neither sudo nor the toolchain. The script now refuses when `EUID` is 0.
+  Anything that needs to work from a GUI-launched or non-interactive shell (no profile sourced)
+  must resolve tool locations itself rather than trusting `PATH`: `install_dev.sh` prepends
+  `~/.cargo/bin` when `rustc` is absent and `~/.local/share/pnpm/bin` when `pnpm` is. Verify that
+  path with `env -i HOME=$HOME PATH=/usr/bin:/bin bash tools/install_dev.sh --no-build`, which is
+  what a desktop launcher actually looks like.
 
 ## Testing
 

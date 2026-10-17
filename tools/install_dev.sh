@@ -26,6 +26,12 @@
 # Everything is under $HOME, so no password is needed and nothing in /usr is touched. Re-running
 # overwrites, which is what makes "always have the latest build" a matter of running this again.
 #
+# **Do not run this with sudo.** Two reasons, and the second is the one that matters: classically,
+# root's $HOME is /root, so `sudo tools/install_dev.sh` would install a second copy of the app that
+# no login session can see. And modern rustup installs the toolchain into the *user's* ~/.cargo,
+# which is not on root's PATH, so the build dies at the first `rustc` with "command not found".
+# The script refuses rather than producing either outcome.
+#
 # ## Usage
 #
 #   tools/install_dev.sh              build (debug) and install
@@ -69,10 +75,47 @@ for argument in "$@"; do
 	esac
 done
 
+# Installing per-user is the whole design, so running as root is refused instead of silently
+# writing to /root/.local where the desktop will never look for it.
+#
+# The effective uid is the right test rather than $SUDO_USER: `sudo -E` can keep the caller's HOME
+# while the process is still root, so a caller that dodged the uid check would write root-owned
+# files into a real home directory. Checking the euid catches both spellings of the mistake.
+if [ "${EUID}" -eq 0 ]; then
+	cat >&2 <<'REFUSE'
+This script installs into ~/.local for the current user, so it must not run as root.
+
+As root, $HOME is /root: the app would be installed where no login session looks for it, and
+the copy your menu and PATH refer to would be untouched. Building also needs the rust toolchain,
+which rustup puts in the *user's* ~/.cargo/bin rather than root's PATH — that is the
+"rustc: command not found" you get from sudo.
+
+Run it without sudo:
+
+  tools/install_dev.sh
+
+Nothing here needs a password, because nothing outside your home directory is written to.
+REFUSE
+	exit 2
+fi
+
 # pnpm installs outside the default PATH on some systems, and an install script that fails with
 # "pnpm: command not found" because of a shell profile is a bad first experience.
 if ! command -v pnpm >/dev/null 2>&1; then
 	export PATH="${HOME}/.local/share/pnpm/bin:${PATH}"
+fi
+
+# Same reasoning for the Rust toolchain: rustup's installer appends ~/.cargo/bin to a shell
+# profile, which a non-interactive shell (or a desktop launcher, or CI before its setup step)
+# has not sourced. A missing `rustc` later fails with a message that names neither the toolchain
+# nor the fix, so it is resolved here where the remedy is known.
+if ! command -v rustc >/dev/null 2>&1; then
+	export PATH="${HOME}/.cargo/bin:${PATH}"
+fi
+if ! command -v rustc >/dev/null 2>&1; then
+	echo "rustc is not on PATH and not in ~/.cargo/bin." >&2
+	echo "Install the Rust toolchain from https://rustup.rs, then run this again." >&2
+	exit 1
 fi
 
 uninstall() {
