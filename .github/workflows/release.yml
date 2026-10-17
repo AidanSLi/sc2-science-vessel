@@ -33,14 +33,14 @@ jobs:
   verify:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         # The version is read from package.json's `packageManager` field, so it cannot drift from
         # the lockfile's own expectation. Pinning it here as well would be a second place to
         # update and therefore a place to forget.
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -79,7 +79,7 @@ jobs:
     # building on a newer base silently raises the minimum glibc every user must have.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux build dependencies
         # `rpm` is on this list because the bundler *can* emit an .rpm, but it is not in the
@@ -95,9 +95,9 @@ jobs:
             libx11-dev \
             patchelf
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -128,7 +128,7 @@ jobs:
         # also the local default in tauri.conf.json, so this only makes CI explicit.
         run: pnpm tauri build --bundles deb,appimage
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-installers
           path: |
@@ -140,11 +140,11 @@ jobs:
     needs: verify
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -173,7 +173,7 @@ jobs:
         # the right default for a beta. Add `msi` here if a managed-deployment artefact is wanted.
         run: pnpm tauri build --bundles nsis
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-installers
           path: src-tauri/target/release/bundle/nsis/*.exe
@@ -183,7 +183,7 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
