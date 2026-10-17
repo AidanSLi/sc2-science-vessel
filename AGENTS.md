@@ -562,6 +562,17 @@ and there is no extra multiplier to apply.
 - **The overlay is above an active fullscreen game with no user configuration on any EWMH
   desktop**, X11 included, because override-redirect is a core X11 concept. The optional KWin rule
   in `tools/overlay_fullscreen_rule.sh` remains as an escape hatch, not the mechanism.
+- **`always_on_top` is owned by exactly one place: the stacking watcher.** It is a compositor
+  *layer*, so `AboveLayer` beats any ordinary window regardless of the X stacking order, and the
+  watcher tracks its value to avoid re-sending it every tick. Any other code setting the flag
+  desynchronises that belief, and the flag then never gets cleared — measured: the overlay sat at
+  `layer=3 keepAbove=true` above a window the player had raised over the game (`layer=2`), which is
+  the exact opposite of the requirement. `claim_unmanaged` deliberately does not set it: an
+  override-redirect window needs no claim at all.
+- **Releasing the override-redirect state re-shows the window, which raises it to the top of the
+  stack.** The caller must re-anchor afterwards or the overlay lands *above* whatever the player
+  just raised. Verified in the raw X stacking order: before the fix `game → RAISED → overlay`,
+  after `game → overlay → RAISED`.
 - Screenshot a fullscreen overlay check with the game **actually running**: the fake fullscreen
   client cannot exercise the `game_active` path because it takes X input focus directly, which
   never updates `_NET_ACTIVE_WINDOW`, so the app reads `game_active=false` against it forever.

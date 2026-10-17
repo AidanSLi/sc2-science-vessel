@@ -391,7 +391,12 @@ fn apply_window_mode(
             // is also click-through — every pointer event passes through the window, so its
             // edges cannot be dragged in the first place.
             reposition_for_overlay(&window, None);
-            window.set_always_on_top(true)?;
+            // Deliberately NOT `set_always_on_top(true)`. The stacking watcher owns that flag: it
+            // is the only code that knows whether the game is windowed or fullscreen, and it
+            // tracks the flag's value to avoid re-sending it every tick. Setting it here would
+            // desynchronise that bookkeeping — measured: the watcher believed the flag was off
+            // while KWin reported `keepAbove=true`, so it never cleared it and the overlay stayed
+            // in `AboveLayer` above the very window the player had raised over the game.
             window.set_ignore_cursor_events(true)?;
             // Only watch stacking for a visible overlay: the watcher's whole job is to express
             // "above the game", and a hidden window has nothing to stack. On a platform with no
@@ -402,10 +407,6 @@ fn apply_window_mode(
                 // tracked by the window manager, so it cannot be restacked or resized and
                 // would look like a frozen rectangle over the game.
                 release_unmanaged(&window);
-            // Analysis mode is an ordinary window the player clicks and types into, so it must
-            // accept focus again. Overlay mode turns focus off (see the Overlay branch), and a
-            // flag left set would make this mode feel broken rather than merely unfocused.
-            platform::allow_focus(&window);
                 watch_overlay_stacking(window.clone());
             }
         }
@@ -432,6 +433,12 @@ fn apply_window_mode(
                 ANALYSIS_MAX_HEIGHT,
             )))?;
             window.set_ignore_cursor_events(false)?;
+            // The inverse of the overlay's refusal, and mandatory rather than cosmetic: the flag
+            // persists on the toolkit's side, so leaving it set would make analysis mode a window
+            // that neither raises when clicked nor accepts a keystroke. It is set before the show
+            // for the same reason the refusal is — the flag is consulted when the window is
+            // mapped.
+            platform::allow_focus(&window);
             window.set_always_on_top(false)?;
             window.set_decorations(true)?;
             window.set_shadow(true)?;
@@ -538,11 +545,14 @@ fn apply_overlay_stacking(
     // after the player raises something over it, and becoming unmanaged then would cover the
     // window they just raised. Only an *active* fullscreen game needs out-ranking.
     if other_fullscreen && game_active && game_anchored && platform::can_outrank_fullscreen() {
-        if claim_unmanaged(window) {
-            // Showing the flipped window is the caller's job — see `watch_overlay_stacking`.
-        }
-    } else {
-        release_unmanaged(window);
+        claim_unmanaged(window);
+    } else if release_unmanaged(window) && game_anchored {
+        // The release re-showed the window, which raised it to the top of the stack. Restacking it
+        // is not optional: the whole point of releasing is to let the overlay go *behind* whatever
+        // the player raised over the game, and an overlay left at the top would cover it instead.
+        // Re-anchoring puts it directly above the game again, which is below anything above the
+        // game but still above the game itself.
+        platform::anchor_overlay(window);
     }
 
     let next = desired_keep_above(other_fullscreen, game_anchored);
@@ -570,16 +580,15 @@ fn apply_overlay_stacking(
 /// ones the player deliberately brought forward; restacking expresses the narrower relationship
 /// that was actually asked for.
 ///
-/// On Linux the watcher also yields to a fullscreen client, because that relationship is not
-/// achievable there at all and pretending otherwise breaks the app. KWin's
-/// `Window::belongsToLayer` checks `isActiveFullScreen()` **before** `keepAbove()`, and
-/// `isActiveFullScreen` requires the fullscreen window to be the active one, so a genuinely
-/// focused fullscreen game sits on the `ActiveLayer` — above every layer a `keepAbove` toplevel
-/// can reach. No stacking request survives that, and the only way up is into `OverlayLayer` (a
-/// KWin rule, ADR 0003), which would also cover other applications' fullscreen windows. So while
-/// another client is fullscreen the watcher drops the claim and re-shows the window: a window
-/// that is behind the game but can still be raised and read is far more useful than one that is
-/// invisible and yet still swallowing clicks. The claim returns as soon as it goes away.
+/// When another client holds an **active** fullscreen window the watcher switches the overlay to
+/// override-redirect, which is the one unprivileged way above it (ADR 0015). KWin's
+/// `Window::belongsToLayer` returns `OverlayLayer` for an unmanaged window *before* it consults
+/// `isActiveFullScreen()`, whereas a `keepAbove` toplevel can only reach `AboveLayer`, which is
+/// below the fullscreen client's `ActiveLayer`. The switch is tied to the game being the *active*
+/// window rather than merely fullscreen, because an unmanaged window cannot go behind anything and
+/// `other_fullscreen` stays true after the player raises something over the game — claiming then
+/// would cover the window they just raised. It is released as soon as the game stops being active,
+/// on a switch to analysis mode, and when the overlay is hidden.
 ///
 /// Windows needs none of that — see `crate::platform::windows` — but it runs the same loop, which
 /// is the point of putting the platform difference behind [`platform::AnchorOutcome`].
@@ -598,15 +607,33 @@ fn watch_overlay_stacking(window: WebviewWindow) {
     std::thread::spawn(move || {
         // Only changed on a transition: the flag is a window property, and setting it every
         // 400 ms would send a request per tick for a value that is almost always unchanged.
-        let mut keep_above = true;
+        // Starts at `false` because this is the first code to touch the flag — `apply_window_mode`
+        // deliberately leaves it alone so that this belief and the window's real state cannot
+        // disagree. Starting at `true` here while nothing had set the flag meant the first poll
+        // computed "already correct" and never claimed the top at all.
+        let mut keep_above = false;
         // The last game rect the overlay was placed against, so a poll that finds the game in the
         // same place does not issue a move request. Comparing here rather than inside
         // `set_position` keeps the decision where the previous state lives.
         let mut last_anchor: Option<(i32, i32)> = None;
         while OVERLAY_WATCH_RUNNING.load(Ordering::Relaxed) {
+            // Debug hook kept out of the shipped path: a real match cannot be scripted, so the only
+            // way to observe what the app concluded about the compositor is to ask it to say so.
+            let debug = std::env::var_os("SC2SV_DEBUG_STACK").is_some();
             if window.is_visible().unwrap_or(false) {
-                match platform::anchor_overlay(&window) {
+                let outcome = platform::anchor_overlay(&window);
+                match outcome {
                     platform::AnchorOutcome::Anchored(placement) => {
+                        if debug {
+                            // One line per poll, because a real match cannot be scripted and the
+                            // compositor's opinion of the window cannot be read back from inside
+                            // the app. It is the only way to tell "the watcher decided wrong"
+                            // apart from "the watcher never ran".
+                            eprintln!(
+                                "stack: other_fullscreen={} game_active={}",
+                                placement.other_fullscreen, placement.game_active
+                            );
+                        }
                         keep_above = apply_overlay_stacking(
                             &window,
                             placement.other_fullscreen,
@@ -1362,11 +1389,26 @@ static PINNED_OVERLAY: std::sync::atomic::AtomicBool =
 /// idempotent and cheap when there is nothing to do, because it is called from paths that run
 /// on every poll and from paths that run once per mode change.
 ///
+/// Returns whether it actually released anything, because the flip re-shows the window (GDK has
+/// to recreate the X resource), and showing a window raises it to the top of the stack. The caller
+/// has to repair the stacking afterwards or the overlay would end up above a window the player has
+/// just raised over the game — measured exactly that way round: `RAISED` at stack position 4 and
+/// the overlay at 5, when the overlay was supposed to have gone behind it.
+///
 /// @param window The window to restore.
-fn release_unmanaged(window: &WebviewWindow) {
+/// @returns `true` when the window was override-redirect and is now managed.
+fn release_unmanaged(window: &WebviewWindow) -> bool {
     use std::sync::atomic::Ordering;
     if WINDOW_UNMANAGED.swap(false, Ordering::SeqCst) {
         platform::set_unmanaged(window, false);
+        // Defensive: an earlier build claimed always-on-top alongside the override-redirect
+        // state, and a window carrying that flag after being released is in `AboveLayer`, which
+        // is above any ordinary window the player raises. Clearing it here means the release
+        // path cannot inherit that stale claim on any code path.
+        let _ = window.set_always_on_top(false);
+        true
+    } else {
+        false
     }
 }
 
@@ -1385,12 +1427,19 @@ fn claim_unmanaged(window: &WebviewWindow) -> bool {
     }
     if platform::set_unmanaged(window, true) {
         WINDOW_UNMANAGED.store(true, Ordering::SeqCst);
-        // Both flags are window-manager properties that a hide/show cycle drops, and this
-        // window is being re-shown precisely while the player is mid-game. Losing
-        // click-through here would put an invisible 380x300 rectangle over the game that eats
-        // every click aimed at whatever is underneath it.
+        // Click-through is a window-manager property that a hide/show cycle drops, and this
+        // window is being re-shown precisely while the player is mid-game. Losing it here would
+        // put an invisible 380x300 rectangle over the game that eats every click aimed at
+        // whatever is underneath it.
         let _ = window.set_ignore_cursor_events(true);
-        let _ = window.set_always_on_top(true);
+        // Deliberately NOT `set_always_on_top(true)`. An override-redirect window needs no claim:
+        // KWin puts an unmanaged window above every managed layer regardless, and the claim
+        // actively breaks the release path. The claim is a layer, so `AboveLayer` keeps the
+        // overlay above a window the player raised over the game (`NormalLayer`) no matter how
+        // the X stack is ordered — measured: the overlay sat at `layer=3 keepAbove=true` above
+        // `RAISED` at `layer=2`, which is the opposite of "go behind other windows". Worse, it is
+        // invisible to the watcher's own bookkeeping, which tracks the flag and therefore never
+        // saw a reason to clear it.
         eprintln!(
             "the game is running fullscreen, so the overlay went above it as an unmanaged \
              window (see docs/adr/0015-raise-the-overlay-with-override-redirect.md)"

@@ -80,6 +80,24 @@ if those are focused above the game window". An unmanaged window cannot go behin
 claim is taken only when the game is the active window, which is exactly when it is on the
 compositor's `ActiveLayer` and needs out-ranking.
 
+### The release must not leave a keep-above claim behind
+
+The flip re-shows the window, because GDK has to recreate the X resource, and showing a window
+raises it to the top of the stack. Releasing the override-redirect state for a window the player
+has just raised something over therefore put the overlay *above* that window — measured directly in
+the raw X stacking order: `game → RAISED → overlay`, exactly backwards. Two corrections: the caller
+re-anchors after a release so the overlay goes back to sitting directly above the game, and
+`claim_unmanaged` no longer sets `always_on_top` at all.
+
+The second one was the subtler bug. `always_on_top` is a compositor **layer**, so `AboveLayer`
+beats any ordinary window (`NormalLayer`) no matter what the X stack says — measured: the overlay
+sat at `layer=3 keepAbove=true` above `RAISED` at `layer=2`. It also desynchronised the stacking
+watcher, which tracks the flag's value to avoid re-sending it every tick: something else set the
+flag, so the watcher's belief never changed and it never saw a reason to clear it. An
+override-redirect window needs no claim anyway — KWin puts an unmanaged window above every managed
+layer regardless — so the claim is now owned by exactly one place, the watcher, which starts from
+`false` and only sets it for a windowed game.
+
 ### Focus must be refused, and before the window is mapped
 
 An overlay that accepts keyboard focus **demotes the game it is drawn over**, which the app then
@@ -103,6 +121,13 @@ GTK 3 through tao, so this declares the same major version and shares the alread
 instead of adding one.
 
 ## Consequences
+
+**Good.** Both halves of the requirement are verified. Above an active fullscreen game: the overlay
+is override-redirect and sits above the game in the raw X stacking order. After the player raises a
+window over that game: the overlay becomes managed again, is restacked to `game → overlay →
+raised`, and reports `keepAbove=false` at `layer=2`, i.e. genuinely behind the raised window. The
+overlay also follows the game when it moves — anchoring measured at three different game positions
+with a constant 24 logical-pixel inset from its top-left corner.
 
 **Good.** The overlay now reaches above an active fullscreen game with **no user configuration on
 any EWMH desktop**, not just KWin — X11 has no equivalent of the KWin layer model, so a compositor
