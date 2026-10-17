@@ -83,6 +83,12 @@ mod tests {
 
 	#[test]
 	fn a_show_request_invokes_the_callback() {
+		// Clear any file left behind by a previous run or a killed process first. `CONTROL_NAME`
+		// is a fixed name because production needs it to be, but the test must not inherit the
+		// port of a process that is no longer listening: the wait below would see it, read it,
+		// and then race a listener that has not published yet.
+		unpublish();
+
 		let calls = Arc::new(AtomicUsize::new(0));
 		let calls_for_listener = calls.clone();
 

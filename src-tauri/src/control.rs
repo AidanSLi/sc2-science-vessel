@@ -41,6 +41,12 @@ pub const MAX_COMMAND_BYTES: u64 = 256;
 /// so it never fires in normal use and never hangs the caller for long when it does.
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The pause before re-reading a port file whose port did not answer.
+///
+/// Long enough for a listener that has just bound to have published, short enough that a caller
+/// asking a dead process for something does not notice.
+const RETRY_DELAY: Duration = Duration::from_millis(250);
+
 /// Reads the port published by a process, if it published one.
 ///
 /// @param name The state file's base name, distinct per role so the watcher and the GUI cannot
@@ -140,14 +146,25 @@ pub fn send(port: u16, command: &str) -> Option<String> {
 
 /// Sends a command to a process identified by its published port file.
 ///
+/// The state file survives a process that was killed outright (`SIGKILL` cannot run cleanup), so
+/// a port read from it may belong to a process that no longer exists. One re-read after a failed
+/// send distinguishes a genuinely absent peer from a file that was stale by milliseconds: a live
+/// listener rewrites the file before it starts accepting, so the second read finds the real port.
+/// Without this, `request_show` could answer `false` for a GUI that was in fact listening.
+///
 /// @param name The peer's state file name.
 /// @param command The line to send.
 /// @returns `true` when the peer replied `ok`.
 pub fn send_to(name: &str, command: &str) -> bool {
-	read_published_port(name)
-		.and_then(|port| send(port, command))
-		.map(|reply| reply == "ok")
-		.unwrap_or(false)
+	let attempt = |port: u16| send(port, command).map(|reply| reply == "ok").unwrap_or(false);
+
+	let first = read_published_port(name).map(attempt).unwrap_or(false);
+	if first {
+		return true;
+	}
+
+	std::thread::sleep(RETRY_DELAY);
+	read_published_port(name).map(attempt).unwrap_or(false)
 }
 
 /// Removes a role's published port file, so a later launch does not try to reach a dead process.
