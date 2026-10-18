@@ -44,7 +44,29 @@
 /// `starcraft ii` covers `StarCraft II.exe` and the versioned `StarCraft II.exe` under
 /// `Versions/Base*`. `starcraft 2` is accepted as well because older shortcuts and Wine
 /// wrappers use it, and the difference is invisible to a player.
-const GAME_PROCESS_NAMES: [&str; 2] = ["starcraft ii", "starcraft 2"];
+///
+/// `sc2_x64` and `sc2` cover what the game is actually called **under Wine**, which is the only
+/// form that reaches a Linux process table. Measured on the reference machine
+/// (`~/Faugus/battlenet`): the running game is `SC2_x64.exe`, and its kernel `comm` is
+/// `Play Main Threa` — the name of a thread the game renamed, not the executable at all. Neither
+/// of those would ever have matched `starcraft ii`, so the watcher could not see the game it was
+/// built for, which showed up as an autostart launch that stayed silent forever.
+const GAME_PROCESS_NAMES: [&str; 4] = ["starcraft ii", "starcraft 2", "sc2_x64", "sc2"];
+
+/// Substrings that identify the game when the executable name is useless.
+///
+/// Under Wine the kernel's `comm` can be a thread name (`Play Main Threa`), so the name-based
+/// match above is not sufficient on its own. The **command line** survives intact — Wine passes
+/// the Windows path through — so it is consulted as a second signal. These are the fragments
+/// that appear in the game's own path but not in Battle.net's, the editor's, or a launcher's.
+const GAME_COMMAND_FRAGMENTS: [&str; 2] = ["sc2_x64.exe", "sc2.exe"];
+
+/// Substrings that disqualify a command line even when it names the game.
+///
+/// The editor and the launcher share the game's directory, so their command lines contain
+/// `StarCraft II` too. Editor and launcher are excluded here for the same reason they are
+/// excluded by name.
+const DISQUALIFYING_COMMAND_FRAGMENTS: [&str; 2] = ["editor.exe", "launcher.exe"];
 
 /// Name fragments that disqualify a process even when it also matches a game name.
 ///
@@ -125,6 +147,33 @@ pub fn is_game_process_name(name: &str) -> bool {
 	})
 }
 
+/// Reports whether a process's command line looks like the StarCraft II game.
+///
+/// Needed because the kernel's `comm` cannot be trusted for this process: Wine runs the game as
+/// `wine64-preloader` and the game renames its main thread, so `comm` reads `Play Main Threa`.
+/// The command line still contains the real Windows path, so it is the reliable signal.
+///
+/// The disqualifying check runs first, for the same reason as in [`is_game_process_name`]: the
+/// editor lives beside the game and its path contains `StarCraft II`.
+///
+/// @param command_line The process's arguments joined by spaces.
+/// @returns `true` when the command line names the game rather than the editor or a launcher.
+pub fn is_game_command_line(command_line: &str) -> bool {
+	let lowered = command_line.to_ascii_lowercase();
+	if lowered.is_empty() {
+		return false;
+	}
+	if DISQUALIFYING_COMMAND_FRAGMENTS
+		.iter()
+		.any(|fragment| lowered.contains(fragment))
+	{
+		return false;
+	}
+	GAME_COMMAND_FRAGMENTS
+		.iter()
+		.any(|fragment| lowered.contains(fragment))
+}
+
 /// Reports whether the StarCraft II process is running right now.
 ///
 /// On Linux this walks `/proc` and compares the `comm` field, which is the kernel's truncated
@@ -147,6 +196,15 @@ pub fn game_is_running() -> bool {
 			// Only numeric directories are processes; everything else in /proc is not.
 			if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
 				continue;
+			}
+			// The command line is read first and is the authoritative signal: under Wine the
+			// kernel's `comm` is a thread name (`Play Main Threa`), so a name-only match never
+			// finds the real game. Reading it first also keeps the common case to one read.
+			if let Ok(raw) = std::fs::read(entry.path().join("cmdline")) {
+				let command_line = String::from_utf8_lossy(&raw).replace('\0', " ");
+				if is_game_command_line(&command_line) {
+					return true;
+				}
 			}
 			let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
 				continue;
@@ -204,6 +262,40 @@ mod tests {
 	fn the_launcher_is_not_the_game() {
 		assert!(!is_game_process_name("Battle.net Launcher.exe"));
 		assert!(!is_game_process_name("Battle.net.exe"));
+	}
+
+	#[test]
+	fn recognises_the_wine_executable_name() {
+		// Measured on the reference machine: the running game is `SC2_x64.exe`.
+		assert!(is_game_process_name("SC2_x64.exe"));
+		assert!(is_game_process_name("SC2.exe"));
+	}
+
+	#[test]
+	fn recognises_the_game_from_a_wine_command_line() {
+		// The real command line, verbatim from `/proc/8298/cmdline` on the reference machine.
+		// The name-based match cannot see this process at all, so this path is load-bearing.
+		let command_line = r"C:\Program Files (x86)\StarCraft II\Versions\Base98310\SC2_x64.exe -sso=1 -launch -uid s2";
+		assert!(is_game_command_line(command_line));
+	}
+
+	#[test]
+	fn a_thread_name_is_not_taken_for_the_game() {
+		// Wine renames the game's main thread, so `comm` reads this on the reference machine. If it
+		// ever started matching, the watcher would fire on unrelated processes.
+		assert!(!is_game_process_name("Play Main Threa"));
+	}
+
+	#[test]
+	fn the_editor_command_line_is_not_the_game() {
+		let editor = r"C:\Program Files (x86)\StarCraft II\StarCraft II Editor.exe";
+		assert!(!is_game_command_line(editor));
+	}
+
+	#[test]
+	fn battle_net_is_not_the_game() {
+		let agent = r"C:/ProgramData/Battle.net/Agent/Agent.9824/Agent.exe --session=1";
+		assert!(!is_game_command_line(agent));
 	}
 
 	#[test]
