@@ -20,11 +20,20 @@
 	import { get } from 'svelte/store';
 	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
 	import { decideMode } from '#lib/game-mode';
+	import type { WindowMode } from '#lib/window-mode';
 	import { initWindowMode, revealWindowMode, windowMode } from '#lib/window-mode';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
 	import '../app.css';
 
 	let { children } = $props();
+
+	/**
+	 * The mode the previous poll decided on, or `null` before the first one.
+	 *
+	 * Only a change here triggers a reveal, so a pinned or externally-forced mode cannot cause a
+	 * reveal on every poll. See `poll`.
+	 */
+	let lastDecision: WindowMode | null = null;
 
 	/** The latest client state. Drives the mode decision and the guide's status line. */
 	let live = $state<LiveState>({
@@ -51,10 +60,18 @@
 		// `null` means "cannot tell what is happening, leave the view alone" — see `decideMode`.
 		if (!mode) return;
 
-		// The transition, not the state, is what reveals the window. A match starting or ending
-		// is the one moment the user asked the app to put itself on screen; every poll after it
-		// finds the mode already applied and therefore does nothing, which is what stops the app
-		// from fighting a player who hid it mid-match.
+		// The transition, not the state, is what reveals the window: a match starting or ending is
+		// the one moment the user asked the app to put itself on screen, and every poll after it
+		// must do nothing so the app cannot fight a player who hid it mid-match.
+		//
+		// This tracks the last decision rather than comparing against the shell's reported mode.
+		// Comparing against the shell looks more correct — the shell is the authority — but it
+		// spins: anything that makes the shell report a mode this poll never asked for (a dev
+		// affordance pinning the overlay, for instance) disagrees on every single poll, so the
+		// window is re-revealed once a second and the hotkey appears to work only one way.
+		if (mode === lastDecision) return;
+		lastDecision = mode;
+
 		if (mode !== get(windowMode)) {
 			await revealWindowMode(mode);
 		}

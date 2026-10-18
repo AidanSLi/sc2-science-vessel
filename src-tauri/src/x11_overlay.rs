@@ -82,13 +82,31 @@ pub const STACKING_POLL: std::time::Duration = std::time::Duration::from_millis(
 ///   an ordinary managed window again (interactive, decorated, taskbar-listed).
 /// @returns `true` when the window was flipped, `false` when this display server cannot.
 pub fn set_unmanaged(window: &tauri::WebviewWindow, unmanaged: bool) -> bool {
+    set_unmanaged_and_visibility(window, unmanaged, true)
+}
+
+/// [`set_unmanaged`], with control over whether the window is left on screen afterwards.
+///
+/// The flip has to hide and re-show the window to change the attribute, so it decides visibility
+/// as a side effect. A caller that is hiding the window anyway has to say so, or the flip's
+/// re-show undoes the hide.
+///
+/// @param window The window to change.
+/// @param unmanaged `true` to become override-redirect, `false` to be managed again.
+/// @param restore_visibility Whether to leave the window visible, as it was found.
+/// @returns `true` when the change was applied.
+pub fn set_unmanaged_and_visibility(
+    window: &tauri::WebviewWindow,
+    unmanaged: bool,
+    restore_visibility: bool,
+) -> bool {
     #[cfg(target_os = "linux")]
     {
-        gtk_unmanaged(window, unmanaged)
+        gtk_unmanaged(window, unmanaged, restore_visibility)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (window, unmanaged);
+        let _ = (window, unmanaged, restore_visibility);
         false
     }
 }
@@ -167,7 +185,7 @@ pub fn allow_focus(_window: &tauri::WebviewWindow) -> bool {
 /// @param unmanaged Whether to make the window override-redirect.
 /// @returns `true` when the flip was applied.
 #[cfg(target_os = "linux")]
-fn gtk_unmanaged(window: &tauri::WebviewWindow, unmanaged: bool) -> bool {
+fn gtk_unmanaged(window: &tauri::WebviewWindow, unmanaged: bool, restore_visibility: bool) -> bool {
     use gtk::prelude::*;
 
     let Ok(gtk_window) = window.gtk_window() else {
@@ -177,7 +195,14 @@ fn gtk_unmanaged(window: &tauri::WebviewWindow, unmanaged: bool) -> bool {
     // while it exists. Visibility is preserved across the flip, because the flip is an
     // implementation detail of *how* the window is stacked and must not change whether the
     // player can see it: the caller asks for "managed again", not "gone".
-    let was_visible = gtk_window.is_visible();
+    //
+    // `restore_visibility` is the one exception, and it exists because the hotkey hides the
+    // window and gives up the unmanaged state in one breath. The hide is queued, so the flip
+    // still sees `is_visible() == true` and its own `show()` would win the race and put the
+    // overlay straight back — measured as three consecutive presses all reporting
+    // `is_visible=true`. An override-redirect window cannot lean on the toolkit's visibility
+    // bookkeeping, so the caller has to state what it wants.
+    let was_visible = restore_visibility && gtk_window.is_visible();
     gtk_window.hide();
     let Some(gdk_window) = gtk_window.window() else {
         return false;
@@ -187,6 +212,39 @@ fn gtk_unmanaged(window: &tauri::WebviewWindow, unmanaged: bool) -> bool {
         gtk_window.show();
     }
     true
+}
+
+/// Hides the window synchronously, so a caller that has just hidden it sees `is_visible() ==
+/// false` immediately.
+///
+/// This exists only because Tauri's `hide()` is queued: it posts a request to the GTK event loop
+/// and returns, so a `hide()` followed immediately by [`set_unmanaged`] still reads
+/// `is_visible() == true` inside the flip. The flip preserves visibility by design (it is an
+/// implementation detail of stacking, not something the player asked for), so it re-showed the
+/// window the hotkey had just hidden — measured as three consecutive presses all reporting
+/// `is_visible=true`. Hiding through GTK directly removes the window between the two calls.
+///
+/// @param window The window to hide.
+/// @returns Whether the hide was performed.
+#[cfg(target_os = "linux")]
+pub fn hide_now(window: &tauri::WebviewWindow) -> bool {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return false;
+    };
+    gtk_window.hide();
+    // Pump the loop once so the unmap is real before the caller reads visibility back. Without
+    // this the hide is still just an event in the queue and the next read reports the old value.
+    while gtk::events_pending() {
+        gtk::main_iteration_do(false);
+    }
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn hide_now(_window: &tauri::WebviewWindow) -> bool {
+    false
 }
 
 /// A rectangle in root (screen) coordinates.

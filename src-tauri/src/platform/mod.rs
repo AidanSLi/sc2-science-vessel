@@ -208,6 +208,33 @@ pub fn set_unmanaged(window: &WebviewWindow, unmanaged: bool) -> bool {
 	}
 }
 
+/// [`set_unmanaged`], saying whether the window must be left on screen afterwards.
+///
+/// The flip that changes the attribute hides and re-shows the window, so it decides visibility as
+/// a side effect. A caller that is hiding the window anyway must pass `false`, or the flip's
+/// re-show undoes the hide — measured before this parameter existed: three consecutive hotkey
+/// presses each reported `is_visible=true` because the flip kept putting the overlay back.
+///
+/// @param window The window to change.
+/// @param unmanaged `true` to become override-redirect, `false` to be managed again.
+/// @param restore_visibility Whether to leave the window visible, as it was found.
+/// @returns `true` when the change was applied.
+pub fn set_unmanaged_and_visibility(
+	window: &WebviewWindow,
+	unmanaged: bool,
+	restore_visibility: bool,
+) -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		crate::x11_overlay::set_unmanaged_and_visibility(window, unmanaged, restore_visibility)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = (window, unmanaged, restore_visibility);
+		false
+	}
+}
+
 /// Stops the window from ever taking keyboard focus.
 ///
 /// Required for a click-through overlay: the window manager keeps a fullscreen window on its

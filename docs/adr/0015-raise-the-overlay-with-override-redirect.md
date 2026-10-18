@@ -152,3 +152,28 @@ reference machine and `sudo` is unavailable there, so it could not be built or t
   active; its analysis of the KWin layer model is still correct and is the reason this ADR exists.
 - `0008-overlay-stacking-on-kde-wayland.md` — the X11 backend, restacking, and the portal hotkey.
 - `0003-overlay-is-a-native-layer-shell-window.md` — the proposed layer-shell design, unimplemented.
+
+## Follow-up: hiding the overlay while it is unmanaged
+
+The flip to and from override-redirect is a GTK `hide()` + `show()` pair, because a `GdkWindow`
+cannot change the attribute while it exists. By design it preserves "was visible" across the
+pair, so that a change of *stacking* never changes whether the player can see the app.
+
+That is wrong for exactly one caller: the hotkey, which hides the window and releases the
+unmanaged state together. The hide is queued, so the flip still read `is_visible() == true` and
+its own `show()` undid the hide. Measured before the fix: three consecutive keypresses each
+logged `is_visible=true`, and the overlay never went away — the hotkey appeared to work only one
+way.
+
+Two changes fix it, and both are needed:
+
+1. `platform::set_unmanaged_and_visibility(window, unmanaged, restore_visibility)` lets the
+   caller say the window must **not** be re-shown. `set_unmanaged` is the preserving wrapper.
+2. `OVERLAY_STACK_LOCK` serialises the flip against the stacking watcher's 400 ms tick. Without
+   it a tick already inside the flip could finish after the hide and re-show the window anyway.
+
+The hide is left merely queued rather than pumped through the GTK loop: GTK may only be driven
+from the main thread, and `toggle_window` runs on the global-shortcut thread, so a "hide
+synchronously" helper built on `gtk::main_iteration_do` panics with
+`GTK may only be used from the main thread.` Reading `is_visible()` of a queued hide is enough,
+because that is exactly the value the release consults.

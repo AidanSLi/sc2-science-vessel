@@ -397,19 +397,34 @@ and there is no extra multiplier to apply.
   also cover other applications' fullscreen windows, so neither is the default. Note that
   `isActiveFullScreen` is focus-conditional: a fullscreen game that lost focus is *not* on
   `ActiveLayer`, which is why a windowed or unfocused game keeps working normally.
-- **The global shortcut cannot be tested by injecting keys on this machine.** XTEST
-  synthesises keys but they do **not** reach XGrabKey grabs through Xwayland: a bare
-  `XGrabKey` + XTEST test showed the grab never firing, so a hotkey test that "did nothing"
-  proves nothing about the app. To test the *registration* path instead, hold the key with an
-  X `grab_key` in another process (see `/tmp/fallback-test.sh` for the shape): that makes a
-  conflict deterministic and proves the fallback walk without pressing anything. Real presses
-  still need a human, or the XDG GlobalShortcuts portal (ADR 0007), which is testable over
-  D-Bus.
-- **A key held by another *X client* does not always block a Tauri shortcut registration.**
-  Seeding `Ctrl+Alt+B` with a held grab did **not** fail registration in the app, while
-  seeding `Ctrl+Alt+F9` with the same technique did. So an app-level key that appears free
-  from `kglobalshortcutsrc` is not proof it is free; and conversely, a shortcut that registers
-  is not proof the key reaches the app. Do not claim either without a real keypress.
+- **XTEST *does* reach XGrabKey grabs through Xwayland, and this was wrongly believed
+  otherwise for a long time.** The deciding test is a process that grabs the key on the root
+  window, verifies a *second* grab is refused with `BadAccess` (proving the grab is really in
+  place), then injects the same combination with `Xlib.ext.xtest.fake_input`. The grab fires
+  (an event with `type=2` KeyPress arrives). The earlier "XTEST cannot reach grabs" conclusion
+  came from a `BadAccess` on the test's own grab — which means something *else* already held
+  the key, i.e. the opposite of free.
+- **A "the hotkey does nothing" result is almost always the wrong key, not a broken hotkey.**
+  `register_overlay_shortcut` walks a fallback list when the stored key is taken and *persists*
+  the substitution, so the app can be listening on a key the settings file no longer names.
+  Read `~/.config/dev.aidansli.sc2-science-vessel/settings.json` **and** the log line
+  `registered the global shortcut <key>` before pressing anything. Two long detours were
+  caused by pressing `Ctrl+Alt+U` while the app had bound `Ctrl+Alt+O`.
+- **Proving a grab exists**: a second `grab_key` on the same key/modifiers is refused with
+  `BadAccess` while a holder is running (self-test: run a holder, expect `TAKEN`). A `FREE`
+  reading is only meaningful with that self-test in place.
+- **An override-redirect window cannot be hidden while it is being re-flipped.** The
+  unmanaged flip is a GTK `hide()` + `show()` pair, and it preserves "was visible" so that
+  stacking changes never alter visibility. The hotkey path therefore hides first and passes
+  `restore_visibility = false` to the release; without that the flip's own `show()` wins the
+  race and the overlay comes straight back (measured: three presses all reporting
+  `is_visible=true`).
+- **Never drive GTK from a background thread.** `gtk::main_iteration_do` and friends panic with
+  `GTK may only be used from the main thread.` A "synchronously hide the window" helper built
+  on them is not viable from the global-shortcut thread.
+- **The stacking watcher and the hotkey must share one lock** (`OVERLAY_STACK_LOCK`). The
+  watcher pokes the window every 400 ms; a hide that lands between the flip's hide and show is
+  undone by it.
 - **Never read the game process's memory and never write to the game.** The only
   sanctioned live input is the SC2 Client API on `localhost:6119`. This keeps the app on
   the benign side of Blizzard's discretionary EULA clause.

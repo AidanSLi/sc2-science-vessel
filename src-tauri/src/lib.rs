@@ -194,12 +194,30 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
         return Ok(false);
     };
 
-    if window.is_visible().unwrap_or(false) {
-        window.hide()?;
-        // Stop the stacking watcher while hidden: it exists to keep the overlay above the
-        // game, and a hidden window has nothing to stack. Leaving it running would also keep
-        // an X connection busy and re-assert keep-above on a window nobody can see.
+    let visible = window.is_visible().unwrap_or(false);
+    if std::env::var_os("SC2SV_DEBUG_TOGGLE").is_some() {
+        eprintln!("toggle: is_visible={visible} mode={:?}", window_mode());
+    }
+    if visible {
+        // Stop the stacking watcher first, then take the lock: a tick already inside
+        // `claim_unmanaged` would otherwise finish its hide/show flip after the hide below and
+        // put the overlay back on screen, which is exactly the "the hotkey only works one way"
+        // symptom this ordering exists to prevent.
         OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _guard = OVERLAY_STACK_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        // Hide first, and tell the release not to re-show. Both parts are needed. The release
+        // flips the override-redirect attribute by hiding and re-showing the window, and by
+        // design it preserves "was visible" across that flip so a stacking change never alters
+        // whether the player can see the app. This path wants the opposite, so it passes
+        // `false` — measured before that parameter existed: three consecutive presses each
+        // reported `is_visible=true` because the flip kept putting the overlay back.
+        //
+        // The hide is left merely queued (rather than pumped through the GTK loop) because GTK
+        // may only be driven from the main thread and `toggle_window` runs on the global-shortcut
+        // thread. `is_visible` reads the queued value, which is exactly what the release needs to
+        // see to skip its own re-show.
+        window.hide()?;
+        release_unmanaged_and_visibility(&window, false);
         Ok(false)
     } else {
         show_window(&app)?;
@@ -620,6 +638,10 @@ fn watch_overlay_stacking(window: WebviewWindow) {
             // Debug hook kept out of the shipped path: a real match cannot be scripted, so the only
             // way to observe what the app concluded about the compositor is to ask it to say so.
             let debug = std::env::var_os("SC2SV_DEBUG_STACK").is_some();
+            let _guard = OVERLAY_STACK_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+            // Re-read visibility once the lock is held: the hotkey may have hidden the window
+            // between the check above and here, and acting on a stale "visible" is what made the
+            // flip re-show a window the player had just dismissed.
             if window.is_visible().unwrap_or(false) {
                 let outcome = platform::anchor_overlay(&window);
                 match outcome {
@@ -1358,6 +1380,17 @@ fn bind_overlay_shortcut_via_portal(app: &tauri::AppHandle) -> bool {
     })
 }
 
+/// Serialises every change to the window's managed state.
+///
+/// Flipping override-redirect requires hiding and re-showing the window (a `GdkWindow` cannot
+/// change the attribute while it exists). That hide/show pair is two separate window
+/// operations, so if the hotkey hides the window in between them the flip's own `show()` wins
+/// and the overlay comes back — measured: three consecutive keypresses all reported
+/// `is_visible=true`, because the watcher pokes the window every 400 ms and one of those pokes
+/// landed inside the hide. Taking this lock in both the watcher tick and the hotkey path makes
+/// the two orderings the only two that can happen.
+static OVERLAY_STACK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Whether the stacking watcher thread is alive.
 ///
 /// Declared on every platform rather than Linux-only: the watcher runs everywhere now, and it is
@@ -1398,9 +1431,22 @@ static PINNED_OVERLAY: std::sync::atomic::AtomicBool =
 /// @param window The window to restore.
 /// @returns `true` when the window was override-redirect and is now managed.
 fn release_unmanaged(window: &WebviewWindow) -> bool {
+    release_unmanaged_and_visibility(window, true)
+}
+
+/// [`release_unmanaged`], saying whether the window must be left on screen afterwards.
+///
+/// A hide-then-release (the hotkey path) must pass `false`: the release flips the attribute by
+/// hiding and re-showing the window, so leaving the restore on would re-show a window the player
+/// just hid. See [`platform::set_unmanaged_and_visibility`].
+///
+/// @param window The window to restore.
+/// @param restore_visibility Whether to leave the window visible, as it was found.
+/// @returns `true` when the window was override-redirect and is now managed.
+fn release_unmanaged_and_visibility(window: &WebviewWindow, restore_visibility: bool) -> bool {
     use std::sync::atomic::Ordering;
     if WINDOW_UNMANAGED.swap(false, Ordering::SeqCst) {
-        platform::set_unmanaged(window, false);
+        platform::set_unmanaged_and_visibility(window, false, restore_visibility);
         // Defensive: an earlier build claimed always-on-top alongside the override-redirect
         // state, and a window carrying that flag after being released is in `AboveLayer`, which
         // is above any ordinary window the player raises. Clearing it here means the release

@@ -360,7 +360,13 @@ pub fn register_overlay_shortcut(app: &AppHandle, requested: &str) -> Result<Str
 
     for candidate in candidates {
         match manager.register(candidate) {
-            Ok(()) => return Ok(candidate.to_string()),
+            Ok(()) => {
+                // Logged on success too, not just failure: "nothing was printed" otherwise has
+                // to mean either "the grab succeeded" or "this function never ran", and those
+                // are indistinguishable from outside the process.
+                eprintln!("registered the global shortcut {candidate}");
+                return Ok(candidate.to_string());
+            }
             Err(err) => {
                 last_error = format!("{candidate}: {err}");
             }
