@@ -292,6 +292,27 @@ and there is no extra multiplier to apply.
   thing that may set decorations, click-through, always-on-top, `skip_taskbar` or the size,
   because those flags do not reliably survive a hide/show cycle: a click-through overlay that
   has quietly become clickable is discovered mid-game, which is the worst time.
+- **A transparent window paints nothing from `html`/`body`; only real elements reach the
+  screen.** `tauri.conf.json` declares the window `"transparent": true` so the overlay can sit
+  over the game, and under a transparent webview WebKitGTK does not paint a `background-color`
+  set on the document roots — a page that is text on transparent roots paints *nothing* (0 of
+  14,362 expected text pixels). Each mode therefore gets a full-viewport block element, both
+  `position: fixed; inset: 0` because a flow-layout `height: 100%` div also measured 98.4%
+  alpha-0: `.app-surface` for analysis (`src/routes/+layout.svelte`) and `.guide-panel` for
+  overlay. Verify with `XGetImage` on the window's own buffer, **not** a screenshot — the page
+  reports correct layout while the pixels are absent, and a screenshot cropped to the window's
+  rectangle happily captures whatever fullscreen window is stacked on top of it. See ADR 0017.
+- **The guide's step list must have a styled scrollbar.** The GTK-themed default scrollbar is
+  the only part of the page WebKit hands to its own composited layer under the CPU path
+  (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, ADR 0005), and everything outside that layer is dropped:
+  the overlay filled 4.2% of its window (a 21x457 strip at the right edge) with every step row
+  invisible. `.guide-steps::-webkit-scrollbar` in `src/app.css` restores it to 100%; any custom
+  scrollbar style works, so keep the bar narrow rather than hidden, and never reach for
+  `overflow: hidden` — it paints but truncates the build order, which is the whole overlay.
+- **`--guide-veil` needs a document-level default.** It is set inline from the component's
+  `panelOpacity`, but `html.is-transparent-window { --guide-veil: 0% }` must exist too: without
+  a value the `color-mix()` declarations are invalid at computed-value time and are dropped,
+  which is how the guide lost its header/footer rules and row surfaces.
 - **Mode and visibility are independent, and conflating them is a bug.** `apply_window_mode`
   takes a `Visibility` (`Shown` for the hotkey, `AsIs` for an automatic change). Without this,
   hiding the app mid-game and then finishing the game pops the window back up uninvited over a

@@ -229,8 +229,8 @@
 <svelte:window on:keydown={onKeydown} />
 
 <div
-	class="flex h-full flex-col text-ink-100"
-	style="background-color: color-mix(in oklab, var(--color-surface-950) {panelOpacity}%, transparent)"
+	class="guide-panel flex h-full flex-col text-ink-100"
+	style="--guide-veil: {panelOpacity}%"
 >
 	<header class="flex items-center justify-between gap-2 guide-rule border-b px-3 py-2">
 		<div class="min-w-0">
@@ -255,7 +255,7 @@
 		</p>
 	{/if}
 
-	<ol class="min-h-0 flex-1 overflow-y-auto" aria-label="Build order steps">
+	<ol class="guide-steps min-h-0 flex-1 overflow-y-auto" aria-label="Build order steps">
 		{#each build.steps as step, index (index)}
 			{@const isNext = index === progress.nextIndex}
 			{@const isPast = index <= progress.lastDueIndex}

@@ -137,5 +137,14 @@
 {#if $windowMode === 'overlay'}
 	<BuildOrderGuide />
 {:else}
-	{@render children()}
+	<!--
+		The analysis view sits on `.app-surface` and not on the page's own background. The window
+		is declared `transparent: true` for the overlay's sake, and in that state WebKitGTK does
+		not paint a `background-color` set on `html`/`body`; a full-size element's background *is*
+		painted. Without this wrapper the analysis view is a see-through pane over the desktop.
+		See the `.app-surface` comment in app.css for the measurements.
+	-->
+	<div class="app-surface h-full w-full">
+		{@render children()}
+	</div>
 {/if}

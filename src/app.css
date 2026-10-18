@@ -73,6 +73,96 @@ html.is-transparent-window .guide-rule {
 	border-color: color-mix(in oklab, var(--color-surface-700) var(--guide-veil), transparent);
 }
 
+/*
+ * The base every view sits on.
+ *
+ * This is an element rather than `html, body` for a measured reason. The app has **one window**
+ * and it is declared `transparent: true` so the overlay can be see-through, which also makes the
+ * WebKit view transparent; in that state a `background-color` on the *root* element is not
+ * painted at all. Measured on the analysis window's own ARGB buffer: 1,032,380 of 1,049,600
+ * pixels (98.4%) had alpha 0 while its text and cards drew normally, so the window read as a
+ * see-through pane with the desktop behind it. The same stylesheet in an opaque window covered
+ * 94.5% of the region, which isolates the fault to the root background rather than to the CSS.
+ *
+ * A full-viewport *element* does paint under a transparent view, but it has to be positioned.
+ * `position: fixed; inset: 0` is not decoration: a flow-layout `height: 100%` div holding the
+ * same background measured 98.4% alpha-0, and changing only that to `fixed; inset: 0` took the
+ * same build to 100% painted. Overlay mode does not render this element at all — the layout
+ * swaps in `<BuildOrderGuide />` — so there is no transparent variant to declare here.
+ */
+.app-surface {
+	position: fixed;
+	inset: 0;
+	background-color: #0a0d12;
+}
+
+/*
+ * The guide's panel, and why its "fully transparent" state is not literally zero alpha.
+ *
+ * With a transparent webview, a page whose root backgrounds are transparent and whose content is
+ * text only paints **nothing at all**. Measured under a transparent view: 0 of 14,362 expected
+ * text pixels appeared, and giving one full-size element any non-zero alpha made 7,393 of them
+ * appear. That is the overlay's exact situation — text over the game with no panel — so at
+ * `--guide-veil: 0%` the mix resolves to a 0.4% black veil instead of `transparent`. At one
+ * part in 255 it is far below the threshold of visibility (the difference the whole feature was
+ * built around is still zero to the eye), but it gives WebKitGTK a surface to composite onto.
+ *
+ * Above zero the veil behaves as it always claimed to: it ramps towards `--color-surface-950`, so
+ * raising `panelOpacity` gives a real translucent panel. The old version mixed against
+ * `transparent`, which made the panel *disappear* as the veil rose rather than get darker.
+ */
+.guide-panel {
+	position: fixed;
+	inset: 0;
+	background-color: color-mix(in oklab, var(--color-surface-950) var(--guide-veil), rgba(0, 0, 0, 0.004));
+}
+
+/*
+ * Default for the veil. It is normally set on the panel itself from the component's
+ * `panelOpacity`, but a value has to exist at this level too: without it the `color-mix()`
+ * expressions above are invalid at computed-value time and the declaration is dropped, which is
+ * precisely what happened before — the variable was documented as "set from the component's
+ * panelOpacity" and no code ever set it, so the guide silently lost its rules and row surfaces.
+ */
+html.is-transparent-window {
+	--guide-veil: 0%;
+}
+
+/*
+ * Scrollbars have to be styled, or the guide's step list is not painted at all.
+ *
+ * This is the second, separate half of the overlay bug and it looks nothing like the first. Under
+ * a transparent webview, a scroll container carrying the *default* WebKitGTK scrollbar paints
+ * nothing but that scrollbar: measured on a bare WebKitGTK window at the overlay's 380x600, a
+ * `position: fixed; inset: 0` panel wrapping an `overflow-y: auto` list filled 5.5% of the window
+ * and the remaining 94.5% had alpha 0 — which is precisely the 4.2% (a 21px-wide, 457px-tall
+ * strip at the right edge) measured on the real overlay. Rows outside the scrollbar's own composited
+ * layer never reach the window's surface.
+ *
+ * The default scrollbar is themed by GTK, so it is the only part of the page WebKit hands to a
+ * separate compositing layer under the CPU path (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, ADR 0005).
+ * Giving it any custom style of our own moves the whole list back into the page's own layer:
+ * `scrollbar-width: none` painted 100%, a plain `::-webkit-scrollbar { width: 8px }` painted 100%,
+ * and `::-webkit-scrollbar { display: none }` painted 100%. The bar is kept and simply made
+ * narrower and darker than the GTK default, so a long list still shows that it scrolls while the
+ * guide stays legible over the game.
+ *
+ * A `overflow: hidden` list also painted 100%, but it silently truncates the build order, which is
+ * the entire content of the overlay.
+ */
+.guide-steps::-webkit-scrollbar {
+	width: 6px;
+}
+
+.guide-steps::-webkit-scrollbar-thumb {
+	background-color: color-mix(in oklab, var(--color-surface-700) var(--guide-veil), transparent);
+	border-radius: 3px;
+}
+
+.guide-steps::-webkit-scrollbar-track {
+	background-color: transparent;
+}
+
 /* Long lists of build steps are compared column-wise, so digits must not jitter. */
 .tabular {
 	font-variant-numeric: tabular-nums;
