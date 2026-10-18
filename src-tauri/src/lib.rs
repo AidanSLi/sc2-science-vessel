@@ -12,12 +12,19 @@
 //! alone — the two are deliberately independent, so an automatic mode change never resurrects a
 //! window the player hid.
 //!
+//! The hotkey *does* pick a mode, but only the mode to reveal: a press asks to see the app, and
+//! what it should see depends on whether a match is being played (ADR 0016). That is a
+//! different question from "has the player deliberately hidden this window", which no client
+//! reading can answer.
+//!
 //! Two constraints from the feasibility study shape this file and must not be broken:
 //!
 //! - The app never reads the game process's memory, and never sends input to the game.
-//!   The only sanctioned live input is the SC2 Client API on `localhost:6119`, which the
-//!   frontend polls directly (ADR 0004). This is what keeps the overlay on the benign
-//!   side of Blizzard's discretionary EULA clause.
+//!   The only sanctioned live input is the SC2 Client API on `localhost:6119`, which both the
+//!   frontend (`src/lib/client-api.ts`) and `game_watch` read (ADR 0004). Process inspection
+//!   exists only to notice that the game started or exited; it reads `/proc` names and never
+//!   touches the game. This is what keeps the overlay on the benign side of Blizzard's
+//!   discretionary EULA clause.
 //! - The window is a plain always-on-top, click-through toplevel for now, positioned by
 //!   restacking over the game's X11 window (ADR 0008). KDE exposes `zwlr_layer_shell_v1`, so a
 //!   real compositor-level overlay surface is reachable and is the planned upgrade (ADR 0003).
@@ -115,11 +122,7 @@ fn set_window_mode(mode: WindowMode) {
 /// @returns The mode now in effect.
 #[tauri::command]
 fn set_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result<WindowMode> {
-    let target = match mode.as_str() {
-        _ if PINNED_OVERLAY.load(std::sync::atomic::Ordering::SeqCst) => WindowMode::Overlay,
-        "overlay" => WindowMode::Overlay,
-        _ => WindowMode::Analysis,
-    };
+    let target = requested_mode(&mode);
     // `AsIs`, not `Shown`: this command reports the mode the frontend should render, and
     // deciding to reveal the window is the hotkey's job. A player who hides the app and then
     // has the mode change underneath them must not have the window pop back up.
@@ -144,18 +147,45 @@ fn set_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result
 /// @returns The mode now in effect.
 #[tauri::command]
 fn reveal_window_mode_command(app: tauri::AppHandle, mode: String) -> tauri::Result<WindowMode> {
-    let target = match mode.as_str() {
-        _ if PINNED_OVERLAY.load(std::sync::atomic::Ordering::SeqCst) => WindowMode::Overlay,
-        "overlay" => WindowMode::Overlay,
-        _ => WindowMode::Analysis,
-    };
+    let target = requested_mode(&mode);
     apply_window_mode(&app, target, Visibility::Shown)?;
     Ok(target)
 }
 
+/// The mode `SC2SV_PIN_OVERLAY` is holding the window in, when it is switched on.
+///
+/// The pin is a development affordance: it exists to keep the overlay on screen for inspection
+/// (and for screenshot comparisons) when no match is running, so it must outrank every other
+/// source of a mode — the frontend's request, the hotkey's reading of the client, the tray.
+/// One function rather than a guard duplicated at each entry point, because a fourth caller
+/// added later would otherwise silently ignore it.
+///
+/// @returns `Some(Overlay)` while the pin is on, and `None` when the pin is off.
+fn pinned_mode() -> Option<WindowMode> {
+    if PINNED_OVERLAY.load(std::sync::atomic::Ordering::SeqCst) {
+        Some(WindowMode::Overlay)
+    } else {
+        None
+    }
+}
+
+/// Interprets a mode name arriving over IPC, honouring the pinned overlay.
+///
+/// Anything unrecognised is analysis: that is the mode in which the player can still see and
+/// click the app, so a bad or crafted payload cannot leave them holding a click-through panel.
+///
+/// @param mode The raw mode name from the frontend.
+/// @returns The mode to apply.
+fn requested_mode(mode: &str) -> WindowMode {
+    pinned_mode().unwrap_or(match mode {
+        "overlay" => WindowMode::Overlay,
+        _ => WindowMode::Analysis,
+    })
+}
+
 /// Reads the window's current mode, so the frontend can render the matching view.
 ///
-/// The frontend cannot infer this: the hotkey changes the mode without any frontend
+/// The frontend cannot infer this: the hotkey and the tray change the mode without any frontend
 /// involvement, so the mode has to be asked for rather than derived from a local variable.
 ///
 /// @returns The mode the window is in.
@@ -178,13 +208,18 @@ fn overlay_supported_command() -> bool {
     platform::overlay_supported()
 }
 
-/// Shows or hides the app window, leaving its mode alone.
+/// Shows or hides the app window, choosing the mode it comes up in.
 ///
-/// **This is what the global hotkey does.** The hotkey is a visibility control, not a mode
-/// switch: the player presses it to bring the app up quickly after a game, and the app shows
-/// whichever view the game state calls for at that moment. Making the hotkey choose a mode
-/// instead would mean a player mid-game could press it and land on the analysis pages, which
-/// is both useless during a game and a way to lose the build order they were following.
+/// **This is what the global hotkey does.** Pressing it while the window is hidden reveals the
+/// window in the mode the player's situation calls for (see [`reveal_for_hotkey`]); pressing it
+/// while the window is visible hides it.
+///
+/// The mode used to be left alone here, on the theory that the hotkey was a pure visibility
+/// control. That was wrong in the case the user named: a player in SC2's menus pressed the key
+/// and got whatever mode the last match left behind — usually the click-through guide, which is
+/// a 380-pixel panel with no pointer events, over a menu where they wanted to read their
+/// matches. The analysis window is what that press is asking for, and only the in-match case
+/// wants the guide.
 ///
 /// @param app The running app handle.
 /// @returns `true` if the window is now visible.
@@ -220,9 +255,37 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
         release_unmanaged_and_visibility(&window, false);
         Ok(false)
     } else {
-        show_window(&app)?;
+        reveal_for_hotkey(&app)?;
         Ok(true)
     }
+}
+
+/// Reveals the window in the mode the game's own client says the player is in.
+///
+/// Distinct from [`show_window`] on purpose, and the difference is who asked. This is the
+/// hotkey's reveal: a player pressing the key is asking to *see* the app, and which of the two
+/// modes that means is a fact about the game, not about the last thing the app did. The rule is
+/// [`game_watch::hotkey_mode_now`] — a match being played means the guide, a running game with
+/// any screen open (or no game at all) means the analysis window.
+///
+/// It is decided here rather than pushed up from the frontend because a hidden WebKitGTK webview
+/// has its page timers suspended: at the exact moment the hotkey fires, the page that would have
+/// known the screen list is not running. See `game_watch`'s module docs.
+///
+/// A client that answers `/game` but not `/ui` leaves the stored mode in place (that is the
+/// `None` case), and the development affordance that pins the overlay wins over everything, so
+/// the overlay can still be inspected outside a live match.
+///
+/// @param app The running app handle.
+/// @returns `Err` only if the window could not be put into the chosen mode.
+fn reveal_for_hotkey(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let mode = pinned_mode()
+        .or_else(game_watch::hotkey_mode_now)
+        .unwrap_or_else(window_mode);
+    if std::env::var_os("SC2SV_DEBUG_TOGGLE").is_some() {
+        eprintln!("toggle: revealing in mode={mode:?}");
+    }
+    apply_window_mode(app, mode, Visibility::Shown)
 }
 
 /// Shows the app window, re-applying whatever its current mode needs.
@@ -285,6 +348,11 @@ fn warm_or_reveal_main_window(app: tauri::AppHandle) {
 /// pick a mode: whether the window is a guide or an analysis view follows the client API's
 /// screen list (ADR 0010), and a second process able to override that would be a second source
 /// of truth for the same fact.
+///
+/// The hotkey path differs — see [`reveal_for_hotkey`], which does choose — because a click on
+/// the app icon is "bring back the window I left where it was", whereas the hotkey is the
+/// player asking for the app while the game is on screen, and the answer to that depends on
+/// whether they are mid-match. Both still read the same single client reading.
 ///
 /// @param app The running app handle.
 fn start_gui_listener(app: tauri::AppHandle) {
@@ -1532,6 +1600,22 @@ const OVERLAY_WIDTH: f64 = 380.0;
 /// upcoming steps, and at 300 logical pixels only about four were visible at a time, so it was
 /// being read one step ahead. Height is the constraint that matters, not width.
 const OVERLAY_HEIGHT: f64 = 600.0;
+
+#[cfg(test)]
+mod requested_mode_tests {
+    use super::{requested_mode, WindowMode};
+
+    /// The two names the frontend actually sends, and the fallback for anything else. An
+    /// unrecognised payload resolves to analysis because that is the mode the player can still
+    /// see and click — a typo must not leave them holding a click-through panel.
+    #[test]
+    fn a_mode_name_maps_to_that_mode_and_junk_maps_to_analysis() {
+        assert_eq!(requested_mode("overlay"), WindowMode::Overlay);
+        assert_eq!(requested_mode("analysis"), WindowMode::Analysis);
+        assert_eq!(requested_mode(""), WindowMode::Analysis);
+        assert_eq!(requested_mode("Overlay"), WindowMode::Analysis);
+    }
+}
 
 #[cfg(test)]
 mod window_visibility_tests {

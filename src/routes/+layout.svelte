@@ -13,8 +13,10 @@
 	 * 2. **Telling the shell the frontend has painted**, so it can reveal a window that is
 	 *    deliberately declared hidden.
 	 *
-	 * The global hotkey is not handled here at all: it is a visibility control owned by the
-	 * shell, and it does not change which view is shown.
+	 * The global hotkey is not handled here, and that is deliberate: it decides its own mode in
+	 * Rust (`game_watch::hotkey_mode`) rather than asking this page. A press has to work while the
+	 * window is hidden, and a hidden WebKitGTK page has its timers suspended — so by the time the
+	 * hotkey fires, this component is not running and could not answer. See ADR 0016.
 	 */
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';

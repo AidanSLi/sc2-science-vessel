@@ -72,10 +72,11 @@
 
 - **The app is resident, so the frontend cannot be the thing that watches for a game.** A
   hidden WebKitGTK widget has its page timers suspended, so a `setInterval` poller in the UI
-  goes silent exactly when the app is meant to be working. Game-start detection and the hint
-  popup therefore live in `src-tauri/src/game_watch.rs`, and the notification is sent and
-  closed by hand because **Plasma ignores the timeout on a critical notification** (measured:
-  still on screen at t+8s with `-t 4000`, and repeated sends stack). See ADR 0012.
+  goes silent exactly when the app is meant to be working. Game-start detection, the hint
+  popup and the hotkey's mode rule therefore live in `src-tauri/src/game_watch.rs`, and the
+  notification is sent and closed by hand because **Plasma ignores the timeout on a critical
+  notification** (measured: still on screen at t+8s with `-t 4000`, and repeated sends stack).
+  See ADR 0012 and ADR 0016.
 
 - **An always-on-top window cannot cover an active fullscreen client.** KWin's
   `Window::belongsToLayer()` tests `isActiveFullScreen()` before `keepAbove()`, so a focused
@@ -297,6 +298,17 @@ and there is no extra multiplier to apply.
   player who asked for it to be gone. Re-centring and `set_focus` are likewise confined to
   `Visibility::Shown`: an automatic scan of client state must never move the window the player
   placed or pull focus out of a running game. The rule is `should_reveal()`, with tests.
+- **The hotkey chooses the mode it reveals, and it chooses it in Rust.** The user's rule: the
+  hotkey brings up the **analysis window while SC2 is running but no match is on**, and the
+  guide only during a match. A hidden WebKitGTK webview has its page timers suspended, so the
+  frontend's poll cannot answer at the moment the key is pressed — the stored mode is frozen at
+  whatever the last match left behind, which presents as a click-through guide over the menus.
+  The rule is `game_watch::hotkey_mode(clock, screens)`: `/game` unreadable or `isReplay` →
+  analysis, `/ui` unreadable → **no change** (`None`), empty `activeScreens` → overlay, any
+  non-empty list → analysis. It names no individual screen, deliberately: every non-empty list
+  means "not playing", so naming names would only duplicate `game-mode.ts`'s vocabulary. See
+  `docs/adr/0016-the-hotkey-picks-its-mode.md`. `show_window` keeps the older meaning ("show in
+  the stored mode") for the watcher's *click-the-icon-again* request; only the hotkey re-decides.
 - **Mode changes come from the client's screen list, never from the game clock.** The clock
   freezes both while paused *and* when the game ends, so it cannot tell the two apart — an
   earlier version used a five-second stall threshold and would throw a player out of the build

@@ -7,9 +7,11 @@
  *
  * Two separate things change it, and keeping them straight is the whole point of this module:
  *
- * - The **global hotkey shows and hides the window** and does not touch the mode. It is a
- *   visibility control: press it to bring the app up quickly, and it appears as whichever view
- *   the game state calls for.
+ * - The **global hotkey shows and hides the window**, and picks the mode to show it in: a match
+ *   being played means the guide, and anything else — SC2 in its menus, or no game at all —
+ *   means the ordinary analysis window. That decision is made in Rust (`game_watch`'s
+ *   `hotkey_mode`), because a hidden webview has its timers suspended and so cannot answer at
+ *   the moment the key is pressed (ADR 0016).
  * - **Game state picks the mode**, automatically (see `#lib/game-mode`): a game in progress
  *   means the build guide, and the game ending means the analysis view — including the switch
  *   back the moment the match ends, which is what lets the player leave it up while playing.
@@ -152,10 +154,12 @@ export async function revealWindowMode(next: WindowMode): Promise<WindowMode> {
  * the frontend deciding visibility for itself — two sources of truth for a window's visibility
  * get out of step the first time the hotkey is used.
  *
- * The mode is left exactly as the shell reports it and is **not** flipped locally: this hides
- * or shows the window, it does not change what the window is.
+ * The returned mode is read back from the shell rather than assumed: revealing chooses a mode
+ * from the client API's reading (analysis outside a match, the guide during one), so a local
+ * guess would be wrong exactly when it matters. The live listener started by {@link initWindowMode}
+ * updates the store when Rust emits the change; this read is for the same-turn answer.
  *
- * @returns The mode the window remains in (unchanged by this call).
+ * @returns The mode the shell reports the window is in.
  */
 export async function toggleWindow(): Promise<WindowMode> {
 	if (!isTauri()) return get(mode);

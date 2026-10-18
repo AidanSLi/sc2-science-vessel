@@ -42,7 +42,10 @@ game. See `docs/adr/0013-a-watcher-owns-the-web-view.md` and
 `docs/adr/0014-the-watcher-is-its-own-executable.md`.
 
 Running the app once is enough: it stays resident, and the overlay hotkey works whether or not
-a game is running.
+a game is running. What it brings up depends on the game, not on the last thing the app did —
+the build-order guide during a match, and the ordinary analysis window while SC2 is in its
+menus, on the score screen, or not running at all. See
+`docs/adr/0016-the-hotkey-picks-its-mode.md`.
 
 ## Running it
 
