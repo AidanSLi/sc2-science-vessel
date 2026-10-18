@@ -24,6 +24,7 @@
         "center": true,
         "decorations": true,
         "theme": "Dark",
+        "transparent": true,
         "visible": false
       }
     ],

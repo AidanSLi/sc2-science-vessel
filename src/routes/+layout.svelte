@@ -21,7 +21,7 @@
 	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
 	import { decideMode } from '#lib/game-mode';
 	import type { WindowMode } from '#lib/window-mode';
-	import { initWindowMode, revealWindowMode, windowMode } from '#lib/window-mode';
+	import { initWindowMode, revealWindowMode, setWindowMode, windowMode } from '#lib/window-mode';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
 	import '../app.css';
 
@@ -60,9 +60,28 @@
 		// `null` means "cannot tell what is happening, leave the view alone" — see `decideMode`.
 		if (!mode) return;
 
-		// The transition, not the state, is what reveals the window: a match starting or ending is
-		// the one moment the user asked the app to put itself on screen, and every poll after it
-		// must do nothing so the app cannot fight a player who hid it mid-match.
+		// The first poll only *records* what the app should be, and never reveals the window.
+		//
+		// This is the difference between "the app was started" and "something happened in the
+		// game". The watcher spawns the web view hidden at login and while the player is in the
+		// menus, precisely so nothing appears until asked; revealing on the first poll undid that
+		// one second after startup, and the symptom was the player pressing the hotkey for the
+		// first time and watching the window *disappear*, because it had already come up on its
+		// own. Measured through the player's own path: the window was visible before the
+		// keypress.
+		//
+		// The mode is still applied, so the app is showing the right view if it is already on
+		// screen — a player who opened it during a match must see the guide, and `setWindowMode`
+		// changes the view without touching visibility.
+		if (lastDecision === null) {
+			lastDecision = mode;
+			if (mode !== get(windowMode)) await setWindowMode(mode);
+			return;
+		}
+
+		// Every poll after the first reveals only on a *transition*, so a match starting or
+		// ending is the one moment the app puts itself on screen, and nothing afterwards can
+		// fight a player who hid it mid-match.
 		//
 		// This tracks the last decision rather than comparing against the shell's reported mode.
 		// Comparing against the shell looks more correct — the shell is the authority — but it

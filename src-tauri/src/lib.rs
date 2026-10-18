@@ -1527,7 +1527,11 @@ const ANALYSIS_MAX_HEIGHT: f64 = 4320.0;
 /// Default overlay width, in logical pixels.
 const OVERLAY_WIDTH: f64 = 380.0;
 /// Default overlay height, in logical pixels.
-const OVERLAY_HEIGHT: f64 = 300.0;
+///
+/// Twice the first attempt's 300 on the player's request: the guide's whole job is showing the
+/// upcoming steps, and at 300 logical pixels only about four were visible at a time, so it was
+/// being read one step ahead. Height is the constraint that matters, not width.
+const OVERLAY_HEIGHT: f64 = 600.0;
 
 #[cfg(test)]
 mod window_visibility_tests {

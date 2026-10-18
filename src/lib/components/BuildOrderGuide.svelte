@@ -62,11 +62,15 @@
 	});
 
 	/**
-	 * Manual clock used when the client API is unreachable. Advanced by the +/- buttons
-	 * (and the space bar), because a Wayland-friendly global hotkey does not exist yet.
+	 * Whether the guide has a clock to count against at all.
+	 *
+	 * There is deliberately no manual clock. An earlier version had +/- buttons and a space-bar
+	 * nudge so the player could correct the reading, but a guide the player can nudge is a guide
+	 * that can be told "you are here" without the game having said so, and the whole point of
+	 * this view is that it knows nothing except the predetermined list and the game's own clock.
+	 * When the clock cannot be read the guide says so and stays at the first step.
 	 */
-	let manualClock = $state(0);
-	let usingManual = $state(false);
+	const hasClock = $derived(!(live.status === 'unavailable' || live.status === 'error') && live.game?.displayTime != null);
 
 	/**
 	 * How opaque the panel behind the text is, as a percentage.
@@ -80,23 +84,16 @@
 	let panelOpacity = $state(0);
 
 	/**
-	 * Picks the clock source from the latest poll.
+	 * Stores the latest poll.
 	 *
-	 * The game's clock always wins when it is readable, and the manual clock takes over
-	 * whenever it is not — before the game has started, after it exits, or in a browser tab.
-	 * Manual mode is entered automatically rather than only on the first keypress, because
-	 * an overlay that shows a frozen `0:00` and no affordance looks broken, while one that
-	 * shows "press space" is self-explanatory.
+	 * Nothing is derived from it here — `clock` and `hasClock` read `live` directly — because
+	 * every extra piece of state that tracked the connection was another thing that could
+	 * disagree with it.
 	 *
 	 * @param state The freshly polled client state.
 	 */
 	function applyLiveState(state: LiveState) {
 		live = state;
-		if (state.status === 'live' || state.status === 'replay') {
-			usingManual = false;
-		} else if (state.status === 'unavailable' || state.status === 'error') {
-			usingManual = true;
-		}
 	}
 
 	/** Poll the client every second. Locally bound so it can be cleared on destroy. */
@@ -110,12 +107,14 @@
 		applyLiveState(await pollClientApi());
 	})();
 
-	/** The clock the guide counts against: the game's own, or the manual fallback. */
-	// `displayTime` is null when the client answered without a clock; treat that the same as
-	// no game, so the overlay shows its manual controls instead of counting from nothing.
-	const clock = $derived(
-		usingManual || !live.game || live.game.displayTime === null ? manualClock : live.game.displayTime
-	);
+	/**
+	 * The clock the guide counts against: the game's own, and nothing else.
+	 *
+	 * `displayTime` is null when the client answered without a clock, which is treated the same
+	 * as no game — the guide holds at step one rather than counting from zero, because counting
+	 * from zero would silently claim the player was early for everything.
+	 */
+	const clock = $derived(hasClock ? (live.game?.displayTime ?? 0) : 0);
 
 	/** How far through the build that clock is. */
 	const progress = $derived(advance(build.steps, clock));
@@ -202,32 +201,18 @@
 		return () => document.documentElement.classList.remove('is-transparent-window');
 	});
 
-	/** Moves the manual clock, used only while the client API is unavailable. */
-	function nudge(delta: number) {
-		usingManual = true;
-		manualClock = Math.max(0, manualClock + delta);
-	}
-
 	/**
-	 * Space nudges the manual clock, Tab resets it, and Escape leaves the guide.
+	 * Escape leaves the guide.
 	 *
 	 * Bound on the window because the guide is click-through in this mode: the player cannot
 	 * click it, so the keyboard is the only reach. Escape is not a nicety — it is the *only* way
 	 * out of the guide while it is click-through, since the rest of the app is unreachable from
-	 * here. The +/- buttons remain for the case where the window is not click-through, which is
-	 * what happens on a compositor that refuses the flag.
+	 * here. There are no other keys: the guide takes no input that could move its clock.
 	 *
 	 * @param event The keydown event.
 	 */
 	function onKeydown(event: KeyboardEvent) {
-		if (event.key === ' ') {
-			event.preventDefault();
-			nudge(5);
-		} else if (event.key === 'Tab') {
-			event.preventDefault();
-			usingManual = true;
-			manualClock = 0;
-		} else if (event.key === 'Escape') {
+		if (event.key === 'Escape') {
 			event.preventDefault();
 			// Deliberately does not hide the app: it returns to the analysis view. Hiding is the
 			// hotkey's job, and a player escaping the guide usually wants to look at the app, not
@@ -251,26 +236,8 @@
 		<div class="min-w-0">
 			<h1 class="truncate text-sm font-semibold">{build.title}</h1>
 			<p class="tabular text-xs text-ink-500">
-				{liveMatchup ?? presetMatchup ?? build.matchup}{#if usingManual} · manual{/if}
+				{liveMatchup ?? presetMatchup ?? build.matchup}
 			</p>
-		</div>
-		<div class="flex items-center gap-1">
-			<button
-				type="button"
-				class="rounded px-2 py-1 text-xs text-ink-300 hover:bg-surface-800"
-				onclick={() => nudge(-5)}
-				aria-label="Rewind the manual clock five seconds"
-			>
-				&#8722;5s
-			</button>
-			<button
-				type="button"
-				class="rounded px-2 py-1 text-xs text-ink-300 hover:bg-surface-800"
-				onclick={() => nudge(5)}
-				aria-label="Advance the manual clock five seconds"
-			>
-				+5s
-			</button>
 		</div>
 	</header>
 
@@ -306,27 +273,18 @@
 				<span class="w-9 shrink-0 text-right text-xs text-ink-500">{step.supply}</span>
 				<span class="w-11 shrink-0 text-xs">{formatGameTime(step.timeInGameSeconds)}</span>
 				<span class="min-w-0 flex-1 truncate">{step.name}</span>
-				{#if isMissed}
-					<span class="text-xs" title="Past its target time">late</span>
-				{/if}
 			</li>
 		{/each}
 	</ol>
 
 	<footer class="guide-rule border-t px-3 py-2">
-		<p class="tabular text-xs text-ink-500">
-			Game clock {formatGameTime(clock)}
+		<p class="tabular text-xs text-ink-300">
 			{#if progress.nextIndex >= 0}
-				&middot; next at {formatGameTime(build.steps[progress.nextIndex].timeInGameSeconds)}
+				{@const next = build.steps[progress.nextIndex]}
+				Next: {next.supply} &nbsp;|&nbsp; {next.name}
 			{:else}
-				&middot; build complete
+				Build complete
 			{/if}
-			{#if progress.missedIndexes.length > 0}
-				&middot; <span class="text-behind">{progress.missedIndexes.length} late</span>
-			{/if}
-		</p>
-		<p class="mt-1 text-[11px] leading-tight text-ink-500">
-			Fixed steps only — it does not watch either player. Space advances the manual clock.
 		</p>
 	</footer>
 </div>
