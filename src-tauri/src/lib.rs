@@ -224,11 +224,33 @@ fn overlay_supported_command() -> bool {
 /// active window. When it is mapped but not active, the press reveals instead, which is what the
 /// player is asking for, and revealing is what raises it above the game.
 ///
+/// The mode has to be part of the decision, because it decides whether "active" is a meaningful
+/// question at all. **Overlay mode is click-through and refuses focus by design** (ADR 0018:
+/// `refuse_focus` sets `set_accept_focus(false)` and `set_focus_on_map(false)`, so the game keeps
+/// focus while the guide is up). An overlay can therefore never be the active window, and asking
+/// whether it is active answers a question with only one possible answer. Treating that answer as
+/// "not visible" made the key a reveal-only key in matches: measured as `is_visible=true
+/// is_active=false hiding=false mode=Overlay`, after which `reveal_for_hotkey` flipped the window
+/// to unmanaged — the frame or so of blankness the player saw — and the still-running stacking
+/// watcher put it straight back. The overlay vanishing for a moment and returning is that cycle.
+///
+/// In overlay mode the only question that matters is whether the window is on screen, which is
+/// exactly what `mapped` already answers, so the press toggles. In analysis mode the window is an
+/// ordinary focusable window and the mapped-but-buried case is real, so `active` still decides.
+///
+/// @param mode The mode the window is currently in.
 /// @param mapped Whether the toolkit reports the window as visible.
 /// @param active Whether the window manager reports the window as active.
 /// @returns `true` when the press should hide the window.
-fn hotkey_should_hide(mapped: bool, active: bool) -> bool {
-    mapped && active
+fn hotkey_should_hide(mode: WindowMode, mapped: bool, active: bool) -> bool {
+    if !mapped {
+        return false;
+    }
+    match mode {
+        // A click-through panel cannot be active, so its on-screen state is the whole story.
+        WindowMode::Overlay => true,
+        WindowMode::Analysis => active,
+    }
 }
 
 /// Shows or hides the app window, choosing the mode it comes up in.
@@ -261,7 +283,7 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
     } else {
         false
     };
-    let visible = hotkey_should_hide(mapped, active);
+    let visible = hotkey_should_hide(window_mode(), mapped, active);
     if std::env::var_os("SC2SV_DEBUG_TOGGLE").is_some() {
         eprintln!(
             "toggle: is_visible={mapped} is_active={active} hiding={visible} mode={:?}",
@@ -1789,30 +1811,42 @@ mod window_visibility_tests {
 
 #[cfg(test)]
 mod hotkey_hide_tests {
-    use super::hotkey_should_hide;
+    use super::{hotkey_should_hide, WindowMode};
 
-    /// The regression the user reported: the app is mapped but buried under an active fullscreen
-    /// game, so a press must reveal rather than hide. Before this rule the press hid the buried
-    /// window, which looked exactly like a key that does nothing, and then appeared to work on
-    /// the next press.
+    /// The regression the user reported: in analysis mode the app is mapped but buried under an
+    /// active fullscreen game, so a press must reveal rather than hide. Before this rule the
+    /// press hid the buried window, which looked exactly like a key that does nothing, and then
+    /// appeared to work on the next press.
     #[test]
-    fn a_mapped_window_hidden_behind_the_game_is_revealed_not_hidden() {
-        assert!(!hotkey_should_hide(true, false));
+    fn a_mapped_analysis_window_hidden_behind_the_game_is_revealed_not_hidden() {
+        assert!(!hotkey_should_hide(WindowMode::Analysis, true, false));
     }
 
-    /// The ordinary case the toggle is for: the app is on screen and in front, so the press
-    /// dismisses it.
+    /// The ordinary analysis case the toggle is for: the app is on screen and in front, so the
+    /// press dismisses it.
     #[test]
-    fn a_mapped_active_window_is_hidden() {
-        assert!(hotkey_should_hide(true, true));
+    fn a_mapped_active_analysis_window_is_hidden() {
+        assert!(hotkey_should_hide(WindowMode::Analysis, true, true));
+    }
+
+    /// The regression that made the key reveal-only inside a match. An overlay is click-through
+    /// and refuses focus, so it is never the active window; requiring `active` therefore meant
+    /// every press revealed. Measured before this: `is_visible=true is_active=false
+    /// hiding=false mode=Overlay`, i.e. the guide flickered and came back instead of closing.
+    #[test]
+    fn a_mapped_overlay_is_hidden_even_though_it_can_never_be_active() {
+        assert!(hotkey_should_hide(WindowMode::Overlay, true, false));
+        assert!(hotkey_should_hide(WindowMode::Overlay, true, true));
     }
 
     /// A window that is not mapped at all is revealed, which is the plain "show me the app"
-    /// press. Its active state is meaningless and must not flip the decision.
+    /// press. Neither the active flag nor the mode may flip that decision.
     #[test]
     fn a_hidden_window_is_revealed_whatever_the_active_flag_says() {
-        assert!(!hotkey_should_hide(false, false));
-        assert!(!hotkey_should_hide(false, true));
+        for mode in [WindowMode::Analysis, WindowMode::Overlay] {
+            assert!(!hotkey_should_hide(mode, false, false));
+            assert!(!hotkey_should_hide(mode, false, true));
+        }
     }
 }
 
