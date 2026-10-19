@@ -287,6 +287,55 @@ pub fn can_outrank_fullscreen() -> bool {
 	cfg!(target_os = "linux")
 }
 
+/// Reports whether the window manager considers the app's window the active one.
+///
+/// Answers a different question from [`is_visible`](tauri::WebviewWindow::is_visible): a managed
+/// window can be mapped and fully painted while sitting underneath an active fullscreen client,
+/// so "mapped" does not mean "in front of the player". The hotkey needs the second answer to
+/// decide between hiding and revealing, and `lib.rs`'s `hotkey_should_hide` is where that is
+/// decided.
+///
+/// Non-Linux platforms answer `false`, which makes the hotkey reveal rather than hide. That is
+/// the safe direction: a reveal is what a player pressing the key wants, and a wrong hide is
+/// what the user reported as a dead key.
+///
+/// @param window The window to ask about.
+/// @returns `true` when the window manager reports it as active.
+pub fn is_active_window(window: &WebviewWindow) -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		crate::x11_overlay::is_active_window(window)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = window;
+		false
+	}
+}
+
+/// Raises the window above everything, including an active fullscreen game.
+///
+/// `set_focus` is not enough: it asks the window manager to activate with source indication 1,
+/// which KWin refuses for a client the user has not just clicked. See
+/// [`crate::x11_overlay::raise_and_activate`] for the measurement. The hotkey needs this because a
+/// managed window cannot out-rank an active fullscreen client (docs/adr/0015), so revealing a
+/// window that is already mapped would otherwise leave it invisible behind the game.
+///
+/// @param window The window to raise.
+/// @returns `true` when the request was made, or `false` on platforms without an X server (where
+///   `set_focus` is sufficient).
+pub fn raise_and_activate(window: &WebviewWindow) -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		crate::x11_overlay::raise_and_activate(window)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = window;
+		false
+	}
+}
+
 /// Linux implementation, delegating to the X11 module.
 ///
 /// This is a thin translation layer rather than a reimplementation: `crate::x11_overlay` holds

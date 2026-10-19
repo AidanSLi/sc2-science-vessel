@@ -624,6 +624,123 @@ pub fn window_id(window: &tauri::WebviewWindow) -> Option<Window> {
     }
 }
 
+/// Reports whether the window manager considers this window the active one.
+///
+/// Needed because "visible" and "in front of the player" are different questions, and the hotkey
+/// has to answer the second one. A managed window cannot out-rank an active fullscreen client
+/// (docs/adr/0015), so it can be mapped and fully painted while entirely hidden behind the game —
+/// and the toolkit's `is_visible` is honest about the map and silent about the stacking.
+///
+/// Compares against `_NET_ACTIVE_WINDOW`, which is the window manager's own answer and therefore
+/// the same property KWin uses to decide what is on top. Not X input focus: the overlay refuses
+/// focus by design, so focus can sit elsewhere while the app is visibly in front.
+///
+/// @param window The Tauri window whose active state is being asked about.
+/// @returns `true` when the window manager reports this window as active.
+#[cfg(target_os = "linux")]
+pub fn is_active_window(window: &tauri::WebviewWindow) -> bool {
+    let Some(id) = window_id(window) else {
+        return false;
+    };
+    let Ok((conn, screen_num)) = x11rb::connect(None) else {
+        return false;
+    };
+    active_window_with(&conn, screen_num) == Some(id)
+}
+
+/// Reports whether the window manager considers this window the active one.
+///
+/// @param _window The Tauri window whose active state is being asked about.
+/// @returns Always `false`, which makes the hotkey fall through to revealing — the harmless
+///   direction, since a reveal is what a player pressing the key is asking for.
+#[cfg(not(target_os = "linux"))]
+pub fn is_active_window(_window: &tauri::WebviewWindow) -> bool {
+    false
+}
+
+/// Raises the window above everything, including an active fullscreen game.
+///
+/// Tauri's own `set_focus` cannot do this. It reaches `gtk_window_present_with_time`, which asks
+/// the window manager to activate with source indication **1** ("an ordinary application"), and
+/// KWin refuses that from a client the user has not just interacted with — measured on the
+/// reference machine: with a fullscreen StarCraft II focused, a source-1 request left the app at
+/// stacking index 3 below the game's 4, with the compositor keeping the game active. The same
+/// request with source indication **2** ("a pagertool or other direct user action") was honoured
+/// immediately: active window became the app and it moved above the game.
+///
+/// Source 2 is the honest value here: the press came from a global hotkey the player configured
+/// for exactly this purpose, which is a direct user action even though no X event carries it.
+///
+/// This matters beyond politeness. A managed window cannot out-rank an *active* fullscreen client
+/// (docs/adr/0015), so merely re-showing a window that is already mapped leaves it underneath the
+/// game and the player concludes the hotkey is broken.
+///
+/// @param window The Tauri window to raise.
+/// @returns `true` when the request was sent.
+#[cfg(target_os = "linux")]
+pub fn raise_and_activate(window: &tauri::WebviewWindow) -> bool {
+    let Some(id) = window_id(window) else {
+        return false;
+    };
+    let Ok((conn, screen_num)) = x11rb::connect(None) else {
+        return false;
+    };
+    raise_and_activate_with(&conn, screen_num, id)
+}
+
+/// Raises the window above everything, including an active fullscreen game.
+///
+/// @param _window The Tauri window to raise.
+/// @returns Always `false`; the platforms without an X server have no separate raise step
+///   because their window managers honour an ordinary activation request.
+#[cfg(not(target_os = "linux"))]
+pub fn raise_and_activate(_window: &tauri::WebviewWindow) -> bool {
+    false
+}
+
+/// Sends the EWMH activation request with the source indication the window manager honours.
+///
+/// Separated from [`raise_and_activate`] so the request itself can be read and tested without a
+/// real window, and so the X11 types stay out of the caller.
+///
+/// @param conn An open X connection.
+/// @param screen_num The screen whose root window receives the request.
+/// @param id The window to activate.
+/// @returns `true` when the event was flushed to the server.
+fn raise_and_activate_with<C: Connection>(conn: &C, screen_num: usize, id: Window) -> bool {
+    let Some(root) = conn.setup().roots.get(screen_num).map(|screen| screen.root) else {
+        return false;
+    };
+    let Some(active_atom) = intern_atom(conn, b"_NET_ACTIVE_WINDOW") else {
+        return false;
+    };
+    // The EWMH fields are source indication, timestamp, then the requester's currently active
+    // window. Source 2 and `CurrentTime` are what the reference measurement used; the third field
+    // is unused by KWin and left at zero.
+    let event = x11rb::protocol::xproto::ClientMessageEvent::new(
+        32,
+        id,
+        active_atom,
+        [2, 0, 0, 0, 0],
+    );
+    let sent = conn
+        .send_event(
+            false,
+            root,
+            x11rb::protocol::xproto::EventMask::SUBSTRUCTURE_REDIRECT
+                | x11rb::protocol::xproto::EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
+        )
+        .is_ok();
+    let flushed = conn.flush().is_ok();
+    if std::env::var_os("SC2SV_DEBUG_TOGGLE").is_some() {
+        eprintln!(
+            "raise: window={id:#x} atom={active_atom:#x} send_event_ok={sent} flush_ok={flushed}"
+        );
+    }
+    sent && flushed
+}
+
 /// Finds the game window using an already-open X connection.
 ///
 /// Split out from [`find_game_window`] and [`anchor_overlay`] so both can share one

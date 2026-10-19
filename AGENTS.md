@@ -316,9 +316,33 @@ and there is no extra multiplier to apply.
 - **Mode and visibility are independent, and conflating them is a bug.** `apply_window_mode`
   takes a `Visibility` (`Shown` for the hotkey, `AsIs` for an automatic change). Without this,
   hiding the app mid-game and then finishing the game pops the window back up uninvited over a
-  player who asked for it to be gone. Re-centring and `set_focus` are likewise confined to
-  `Visibility::Shown`: an automatic scan of client state must never move the window the player
-  placed or pull focus out of a running game. The rule is `should_reveal()`, with tests.
+  player who asked for it to be gone. Re-centring, `set_focus` and raising are likewise confined
+  to `Visibility::Shown`: an automatic scan of client state must never move the window the
+  player placed or pull focus out of a running game. The rule is `should_reveal()`, with tests.
+- **A mapped window is not a visible window.** `window.is_visible()` answers only "is it
+  mapped". A window sitting *under* a focused fullscreen game is mapped, so a toggle that trusts
+  it reads the app as shown and **hides** it — the player presses the hotkey and the window
+  vanishes from the only place it could have been seen, which reads as "the hotkey does nothing".
+  Visibility for the toggle means mapped **and** active; see `hotkey_should_hide` in
+  `src-tauri/src/lib.rs`.
+- **Raising needs EWMH source indication 2; `set_focus` is not enough.** `set_focus` reaches
+  `gtk_window_present_with_time`, which activates with source indication 1 ("ordinary
+  application"), and KWin refuses that for a client the user did not just click: measured, the
+  app stayed below the focused fullscreen game with the game still active. Source 2 ("direct
+  user action" — the truth for a global hotkey) is honoured at once. Use
+  `platform::raise_and_activate`, and call it **after** `apply_window_mode` returns and on the
+  main thread: `show`, `set_size` and `center` are posted to tao's event-loop channel, so a raise
+  issued inside the function is processed first and then undone by the resize. A managed window
+  cannot out-rank an *active* fullscreen client (ADR 0015).
+- **`WebviewWindow::set_background_color(None)` is opaque white, not transparent.**
+  tauri-runtime-wry 2.12.1 maps `None` to `(255,255,255,255)`
+  (`tauri-runtime-wry-2.12.1/src/lib.rs:3789`), which paints the guide onto a solid white panel
+  over the game. The transparent value is `Some(Color(0,0,0,0))` — the constant
+  `TRANSPARENT_BACKGROUND`. Set the background on the **webview** (`window.as_ref() as
+  &Webview<Wry>`), never on the `WebviewWindow`: the window-level setter also writes the toplevel
+  colour as a GTK CSS rule that paints **in front of** the page (measured: `(10,13,18)` gave a
+  98.4% white window, `(0,8,255)` gave `(0,255,255)`). Set it on both mode branches, since the
+  startup path applies a stored mode without the other having been left. See ADR 0018.
 - **The hotkey chooses the mode it reveals, and it chooses it in Rust.** The user's rule: the
   hotkey brings up the **analysis window while SC2 is running but no match is on**, and the
   guide only during a match. A hidden WebKitGTK webview has its page timers suspended, so the

@@ -208,6 +208,29 @@ fn overlay_supported_command() -> bool {
     platform::overlay_supported()
 }
 
+/// Decides whether the hotkey should *hide* rather than reveal, from what the player can see.
+///
+/// The hotkey is a toggle, and the honest question it asks is "is the app in front of me?" —
+/// not "is the window mapped?". Those differ exactly where the user reported the key doing
+/// nothing: with StarCraft II in fullscreen and focused, the app window can still be *mapped*
+/// while sitting underneath the game, because a managed window cannot out-rank an active
+/// fullscreen client (docs/adr/0015 records the measurements: a keep-above managed window is
+/// 0 % visible over an active fullscreen client). `is_visible()` then answers `true` for a
+/// window the player cannot see, so the press took the hide branch and the app disappeared from
+/// a place the player was not looking — indistinguishable from a dead key. Pressing again then
+/// revealed it, so the key "worked" only on alternate presses.
+///
+/// So a mapped window is only treated as visible when the window manager also reports it as the
+/// active window. When it is mapped but not active, the press reveals instead, which is what the
+/// player is asking for, and revealing is what raises it above the game.
+///
+/// @param mapped Whether the toolkit reports the window as visible.
+/// @param active Whether the window manager reports the window as active.
+/// @returns `true` when the press should hide the window.
+fn hotkey_should_hide(mapped: bool, active: bool) -> bool {
+    mapped && active
+}
+
 /// Shows or hides the app window, choosing the mode it comes up in.
 ///
 /// **This is what the global hotkey does.** Pressing it while the window is hidden reveals the
@@ -229,9 +252,21 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
         return Ok(false);
     };
 
-    let visible = window.is_visible().unwrap_or(false);
+    let mapped = window.is_visible().unwrap_or(false);
+    // Ask the window manager, not just the toolkit: a mapped window underneath an active
+    // fullscreen game is not something the player can see, and treating it as visible made the
+    // hotkey's first press hide a window nobody was looking at. See `hotkey_should_hide`.
+    let active = if mapped {
+        platform::is_active_window(&window)
+    } else {
+        false
+    };
+    let visible = hotkey_should_hide(mapped, active);
     if std::env::var_os("SC2SV_DEBUG_TOGGLE").is_some() {
-        eprintln!("toggle: is_visible={visible} mode={:?}", window_mode());
+        eprintln!(
+            "toggle: is_visible={mapped} is_active={active} hiding={visible} mode={:?}",
+            window_mode()
+        );
     }
     if visible {
         // Stop the stacking watcher first, then take the lock: a tick already inside
@@ -285,7 +320,27 @@ fn reveal_for_hotkey(app: &tauri::AppHandle) -> tauri::Result<()> {
     if std::env::var_os("SC2SV_DEBUG_TOGGLE").is_some() {
         eprintln!("toggle: revealing in mode={mode:?}");
     }
-    apply_window_mode(app, mode, Visibility::Shown)
+    let result = apply_window_mode(app, mode, Visibility::Shown);
+    // Raise *after* the mode has been applied, and on the main thread, because every geometry
+    // call in `apply_window_mode` (`show`, `set_size`, `center`) is posted to tao's event-loop
+    // channel rather than executed inline. Those posted requests are handled in arrival order, so
+    // a raise issued from inside the function is processed first and then undone by the resize
+    // that follows it. Measured before this move: a press with the game focused left the app at
+    // stacking index 3 below the game's 4, and `_NET_ACTIVE_WINDOW` still named the game.
+    //
+    // Reaching the main thread is required, not merely tidy: `set_focus` would otherwise be the
+    // only way to raise the window, and it uses source indication 1, which KWin refuses for a
+    // client the user has not just clicked.
+    let handle = app.clone();
+    let raised = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
+            platform::raise_and_activate(&window);
+        }
+    });
+    if let Err(err) = raised {
+        eprintln!("could not raise the window after the hotkey ({err})");
+    }
+    result
 }
 
 /// Shows the app window, re-applying whatever its current mode needs.
@@ -455,6 +510,21 @@ fn apply_window_mode(
             // `show()` the overlay became `_NET_ACTIVE_WINDOW` and the fullscreen game was
             // demoted, which the stacking watcher then read as "the game is not active".
             platform::refuse_focus(&window);
+            // Back to a fully transparent web view, so the guide shows the game through its own
+            // text and nothing else. Set on every overlay entry rather than only when leaving
+            // analysis: a mode can be entered without the other having been left (the startup
+            // path applies the stored mode directly), and a guide that came up with an opaque
+            // black backdrop would hide the game it is supposed to float over.
+            // Note the argument: `Some(Color(0, 0, 0, 0))`, not `None`. `None` does *not* mean
+            // "transparent" — tauri-runtime-wry 2.12.1 maps it to opaque white at
+            // `src/lib.rs:3789` (`color.map(Into::into).unwrap_or((255, 255, 255, 255))`), and
+            // measured on this build that painted the guide onto a 94.3 % `rgba(254,254,254,255)`
+            // panel that hid the game completely. A zero-alpha colour is the value that actually
+            // clears the surface.
+            let webview: &tauri::Webview<tauri::Wry> = window.as_ref();
+            if let Err(err) = webview.set_background_color(Some(TRANSPARENT_BACKGROUND)) {
+                eprintln!("could not make the overlay's background transparent ({err})");
+            }
             if should_show {
                 window.show()?;
             }
@@ -530,6 +600,29 @@ fn apply_window_mode(
             window.set_shadow(true)?;
             window.set_resizable(true)?;
             window.set_skip_taskbar(false)?;
+            // Give the web view an opaque background. The page's own `.app-surface` already
+            // paints the same colour (ADR 0017), so this is the second of two defences, and it
+            // is deliberately the *same* colour: the two agree, so there is no seam while the
+            // page is still laying out.
+            //
+            // Both are wanted because the two fail in different circumstances. `.app-surface`
+            // needs the page to have been mounted; a view created transparent and shown before
+            // its first composite has nothing underneath it until then. Measured without this
+            // call, three launches in a row painted 100% — so the CSS alone is sufficient in
+            // practice — but this costs one call and removes the window in which the desktop can
+            // show through.
+            //
+            // This is `Webview::set_background_color`, deliberately not
+            // `WebviewWindow::set_background_color`: the latter also sets it on the *window*,
+            // which goes through GTK CSS and paints over the page instead of behind it. Measured
+            // there: asking for `(10,13,18)` produced a 98.4 % white window, and `(0,8,255)`
+            // produced `(0,255,255)`. The web-view-only setter round-trips exactly.
+            let webview: &tauri::Webview<tauri::Wry> = window.as_ref();
+            if let Err(err) = webview.set_background_color(Some(ANALYSIS_BACKGROUND)) {
+                // Not fatal: the page's own surface still paints. Worth a line, not a failed mode
+                // change.
+                eprintln!("could not set the analysis background colour ({err})");
+            }
             if should_show {
                 window.show()?;
             }
@@ -547,9 +640,22 @@ fn apply_window_mode(
                     window.center()?;
                 }
             }
-            // Only steal focus when the player asked for the window. An automatic mode change
+            // Only raise and focus when the player asked for the window. An automatic mode change
             // must never pull focus away from a running game.
+            //
+            // `set_focus` alone is not enough, and the gap is exactly the reported bug: it asks
+            // the window manager to activate with source indication 1 ("ordinary application"),
+            // which KWin refuses for a client the user has not just interacted with. With a
+            // fullscreen game focused and the app already mapped, the request left the app at
+            // stacking index 3 below the game's 4 and the game active — measured. The EWMH
+            // request `platform::raise_and_activate` sends uses source indication 2 ("direct user
+            // action"), which the same measurement showed honoured immediately. The hotkey is a
+            // direct user action, so that is the honest value.
+            //
+            // Both are attempted: the EWMH path is Linux-only and answers `false` elsewhere,
+            // where `set_focus` is the correct and sufficient call.
             if visibility == Visibility::Shown {
+                platform::raise_and_activate(&window);
                 window.set_focus()?;
             }
         }
@@ -1564,6 +1670,22 @@ fn claim_unmanaged(window: &WebviewWindow) -> bool {
     }
 }
 
+/// The colour the analysis view's web view is given, so it never composites onto nothing.
+///
+/// Must stay equal to the frontend's `--color-surface-950` (`oklch(0.16 0.012 258)`, which is
+/// `#0a0d12`). The page paints the same colour on its own surface, so the two agree and the
+/// window has no visible seam while the page is still loading. That agreement is not what makes
+/// the window opaque — the web view's own background is — but a mismatch would show as a flash of
+/// the wrong shade on every reveal.
+const ANALYSIS_BACKGROUND: tauri::webview::Color =
+    tauri::webview::Color(0x0a, 0x0d, 0x12, 0xff);
+
+/// The zero-alpha colour that makes the overlay's web view see-through.
+///
+/// A named constant rather than `None` at the call site, because `None` means *opaque white* in
+/// this stack (see the comment where it is used) — the opposite of what the overlay needs.
+const TRANSPARENT_BACKGROUND: tauri::webview::Color = tauri::webview::Color(0, 0, 0, 0);
+
 /// Window size in analysis mode, in logical pixels.
 ///
 /// Restored on every switch back, because the window was resized to overlay dimensions and a
@@ -1642,6 +1764,35 @@ mod window_visibility_tests {
     #[test]
     fn an_automatic_mode_change_keeps_a_visible_window_visible() {
         assert!(should_reveal(Visibility::AsIs, true));
+    }
+}
+
+#[cfg(test)]
+mod hotkey_hide_tests {
+    use super::hotkey_should_hide;
+
+    /// The regression the user reported: the app is mapped but buried under an active fullscreen
+    /// game, so a press must reveal rather than hide. Before this rule the press hid the buried
+    /// window, which looked exactly like a key that does nothing, and then appeared to work on
+    /// the next press.
+    #[test]
+    fn a_mapped_window_hidden_behind_the_game_is_revealed_not_hidden() {
+        assert!(!hotkey_should_hide(true, false));
+    }
+
+    /// The ordinary case the toggle is for: the app is on screen and in front, so the press
+    /// dismisses it.
+    #[test]
+    fn a_mapped_active_window_is_hidden() {
+        assert!(hotkey_should_hide(true, true));
+    }
+
+    /// A window that is not mapped at all is revealed, which is the plain "show me the app"
+    /// press. Its active state is meaningless and must not flip the decision.
+    #[test]
+    fn a_hidden_window_is_revealed_whatever_the_active_flag_says() {
+        assert!(!hotkey_should_hide(false, false));
+        assert!(!hotkey_should_hide(false, true));
     }
 }
 
