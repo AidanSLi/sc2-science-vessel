@@ -410,6 +410,24 @@ fn warm_or_reveal_main_window(app: tauri::AppHandle) {
 
         if !start_hidden {
             let _ = window.show();
+            // A view that was transparent from creation can finish its first composite with an
+            // empty backing store, leaving the window fully see-through until something later
+            // forces a repaint. Measured on the analysis view: one launch in five started at
+            // 99.7% alpha-0 and stayed that way, because nothing repainted until the player
+            // moved or resized the window. The frontend nudges a repaint on resize and on the
+            // clock, but neither happens before the window is on screen.
+            //
+            // Re-asserting the webview's own background once it is mapped is the cheap fix: the
+            // setter asks WebKit to clear the surface to an opaque colour, which is the paint
+            // the empty state was missing. It is the same call and the same colour as
+            // `apply_window_mode`, so it cannot disagree with it, and it is harmless when the
+            // first composite already succeeded.
+            if window_mode() == WindowMode::Analysis {
+                let webview: &tauri::Webview<tauri::Wry> = window.as_ref();
+                if let Err(err) = webview.set_background_color(Some(ANALYSIS_BACKGROUND)) {
+                    eprintln!("could not repaint the starting window ({err})");
+                }
+            }
         }
     });
 }

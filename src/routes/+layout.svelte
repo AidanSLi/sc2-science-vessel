@@ -24,6 +24,7 @@
 	import { decideMode } from '#lib/game-mode';
 	import type { WindowMode } from '#lib/window-mode';
 	import { initWindowMode, revealWindowMode, setWindowMode, windowMode } from '#lib/window-mode';
+	import { observeRepaints } from '#lib/repaint';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
 	import '../app.css';
 
@@ -107,6 +108,12 @@
 			stopListening = unlisten;
 		});
 
+		// Keep the transparent view's backing store alive across repaints. This lives here, above
+		// both modes, because the fault is not mode-specific: the guide collapsed to its status
+		// line while the clock ticked, and the analysis view went blank outside the repainted
+		// rectangle when it was interacted with. See `#lib/repaint` and ADR 0019.
+		const stopRepainting = observeRepaints();
+
 		// Poll immediately, then once a second. The first read must not wait a second: a player
 		// opening the app during a game should see the build guide straight away.
 		void poll();
@@ -130,6 +137,7 @@
 		return () => {
 			clearInterval(timer);
 			stopListening?.();
+			stopRepainting();
 		};
 	});
 </script>

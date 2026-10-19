@@ -81,9 +81,45 @@ the ticking line is redrawn.
 
 ## Decision
 
-`BuildOrderGuide.svelte` alternates the root element's opacity between `1` and `0.999` whenever the
-clock changes. That forces WebKit to composite the entire layer instead of only the damaged
-rectangle, so the buffer is never discarded.
+The nudge lives in `src/lib/repaint.ts` and alternates the root element's opacity between `1` and
+`0.999`. That forces WebKit to composite the entire layer instead of only the damaged rectangle, so
+the buffer is never discarded.
+
+It is shared code rather than a detail of the guide because **the fault is not mode-specific**. The
+original write-up scoped it to the overlay, and that was wrong: the analysis view loses its buffer
+the same way. Measured on the real analysis window, driving it from XTEST:
+
+| Action | painted before | painted after |
+| --- | --- | --- |
+| resize to 1100x780 | 100.0 % | **1.3 %** |
+| resize to 1150x800 | 1.3 % | 100.0 % |
+| resize to 1050x700 | 100.0 % | 100.0 % |
+| resize back to 1280x820 | 100.0 % | **10.3 %** |
+
+That is the user's report exactly: the window renders correctly, then goes see-through as soon as it
+is interacted with. And it is intermittent at startup too — measured across six launches, one
+earlier build started at 99.7 % alpha-0 and another pair of launches at 99.6 %, each staying blank
+until something forced a repaint, because nothing changes before the player touches the window.
+
+So three call sites share the one helper, and each covers a case the others do not:
+
+- **The clock**, via an effect in `BuildOrderGuide.svelte`, because during a match the clock is what
+  repaints.
+- **Layout changes**, via a `ResizeObserver` in `observeRepaints`, because resizing is what repaints an
+  analysis view.
+- **A 2-second interval**, in `observeRepaints`, because the interactions that repaint are not
+  enumerable — scrolling, route changes, focus changes, content updates — and a style assignment every
+  two seconds is far cheaper than an invisible window. It also covers the empty first composite: an
+  explicit set of nudges at 400 ms, 1400 ms and 3000 ms after mount settles the startup case.
+
+Measured after the change: six consecutive launches each at `alpha=0: 0 = 0.0 %`; twelve rounds of
+six rapid resizes-plus-click-plus-scroll cycles all at 100.0 %; overlay mode still 100.0 % with
+the guide visibly intact.
+
+A Rust attempt at the same thing — re-asserting `set_background_color(Some(ANALYSIS_BACKGROUND))`
+once the window is mapped, in `warm_or_reveal_main_window` — was measured and **did not work**: two
+of six launches still started at 99.6 %. It is kept, because it is one call, harmless and cannot
+disagree with `apply_window_mode`, but it is not what fixes the bug. Only the forced composite does.
 
 Measured with the fix in place: **100.0 %** of the window painted after 30 consecutive clock ticks,
 and across a mode switch (1280x820 → 380x600). On the installed build during a live match:

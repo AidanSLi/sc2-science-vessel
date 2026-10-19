@@ -349,13 +349,21 @@ and there is no extra multiplier to apply.
   it, via wry 0.57.0 `src/webkitgtk/mod.rs:293-295` — discards its backing store whenever anything
   repaints and redraws only the damaged rectangle. Measured in a harness with the real guide page:
   12.6% of the window painted after six one-line text updates under a transparent view, against
-  100% under an opaque one. Outside a match nothing repaints, so the fault is invisible there and
-  looks "fixed" every time it is checked outside a game. The remedy is to alternate the root
-  element's opacity between `1` and `0.999` on every clock tick, which forces a full-layer
-  composite (`BuildOrderGuide.svelte`); the values **must** alternate, because re-assigning the
-  same value is not a change and does not recomposite. Element promotion hints (`will-change`,
-  `transform`, `contain`, `backdrop-filter`, a steady `opacity`) and an opaque root background were
-  all measured and do **not** help. See ADR 0019.
+  100% under an opaque one. **This is not overlay-specific** — it was originally written up that way
+  and that was wrong. The analysis view loses its buffer identically: resizing the real window to
+  1100x780 dropped it to 1.3% painted, and 10.3% on resizing back. It is also intermittent at
+  startup (measured: one launch in five, later two in six, came up at ~99.6% alpha-0 and stayed
+  blank because nothing repainted before the player touched it). Outside a match nothing repaints,
+  so the fault is invisible there and looks "fixed" every time it is checked outside a game.
+  The remedy is `nudgeRepaint()` in `src/lib/repaint.ts`: alternate the root element's opacity
+  between `1` and `0.999` to force a full-layer composite. It must be called from all three
+  triggers — the guide's clock effect, a `ResizeObserver` on layout changes, and a 2-second
+  interval — plus explicit settling nudges shortly after mount for the empty-first-composite case.
+  The values **must** alternate, because re-assigning the same value is not a change and does not
+  recomposite. Element promotion hints (`will-change`, `transform`, `contain`, `backdrop-filter`, a
+  steady `opacity`) and an opaque root background were all measured and do **not** help, and Rust
+  cannot fix it either: re-asserting `set_background_color` after the window is mapped was
+  measured and two of six launches still started blank. See ADR 0019.
 - **An override-redirect flip destroys the window's position and click-through.** Changing the
   attribute means `hide()` → `set_override_redirect()` → `show()`, which recreates the `GdkWindow`,
   so the window manager places the new one from scratch — for an unmanaged window, dead centre of
