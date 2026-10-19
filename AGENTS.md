@@ -356,9 +356,16 @@ and there is no extra multiplier to apply.
   blank because nothing repainted before the player touched it). Outside a match nothing repaints,
   so the fault is invisible there and looks "fixed" every time it is checked outside a game.
   The remedy is `nudgeRepaint()` in `src/lib/repaint.ts`: alternate the root element's opacity
-  between `1` and `0.999` to force a full-layer composite. It must be called from all three
-  triggers — the guide's clock effect, a `ResizeObserver` on layout changes, and a 2-second
-  interval — plus explicit settling nudges shortly after mount for the empty-first-composite case.
+  between `1` and `0.999` to force a full-layer composite. **Repair is not enough — it has to
+  happen in the same frame as the damage, or the window is visibly blank in between.** A hover or
+  a text selection invalidates only the few pixels under the pointer, so the window collapses to
+  those pixels: measured 12.7 % painted during a drag-selection, with a 2-second repair interval
+  leaving it blank for up to two seconds. That latency *is* the bug the user sees. So the nudge is
+  driven by input events (`pointermove`, `pointerdown`, `pointerup`, `wheel`, `keydown`, `scroll`,
+  passive + capture), which fire after the damage and before the composite, plus the guide's clock
+  effect, a `ResizeObserver`, a 2-second interval as a floor, and settling nudges after mount for
+  the empty-first-composite case. A continuous `requestAnimationFrame` nudge also works but costs
+  3 % of a core while idle, against 0 % for the event listeners.
   The values **must** alternate, because re-assigning the same value is not a change and does not
   recomposite. Element promotion hints (`will-change`, `transform`, `contain`, `backdrop-filter`, a
   steady `opacity`) and an opaque root background were all measured and do **not** help, and Rust

@@ -86,8 +86,37 @@ export function observeRepaints(win: Window = window): () => void {
 	// cause one are not enumerable (scrolling, route changes, focus changes, content updates).
 	// One style assignment every couple of seconds is far cheaper than an invisible window, and it
 	// is invisible itself — the two values differ by 0.1%.
+	//
+	// The interval is a *repair*, not a prevention: measured, a drag-selection dropped the window
+	// to 12.7% painted and the next tick brought it back, which leaves it blank for up to two
+	// seconds. That latency is the user-visible bug, so the interval is the floor and the
+	// per-frame loop below is what actually keeps it painted.
 	const timer = setInterval(nudgeRepaint, 2000);
 	teardown.push(() => clearInterval(timer));
+
+	// Nudge on the input events that cause damage-rect repaints. This is the trigger that matters
+	// for hover and selection, which is what the user reported.
+	//
+	// Both are the same fault: the pointer moves, WebKit invalidates only the few pixels under it
+	// (`:hover` on a link, or the dragged selection) and discards the backing store, so the window
+	// collapses to just those pixels and everything else goes see-through. Measured on the real
+	// window: a drag-selection across body text dropped it to 12.7% painted, and the 2-second
+	// interval brought it back — leaving it blank for up to two seconds, which is the visible bug.
+	//
+	// Input listeners run before the frame is composited and after the damage that triggered them,
+	// so nudging here puts the repair in the same frame as the repaint that damaged it: never
+	// visibly blank. That is why these events and not a timer.
+	//
+	// Deliberately not a `requestAnimationFrame` pump. A continuous per-frame loop was measured to
+	// work too, but it cost 3% of a core while the app sat idle, which is a poor trade for a
+	// resident app. These listeners cost nothing until the player actually touches the window.
+	for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'scroll']) {
+		const onInput = () => nudgeRepaint();
+		// `passive` because none of these handlers prevent anything; capture so an element that
+		// stops propagation cannot hide the damage from this repair.
+		win.addEventListener(type, onInput, { passive: true, capture: true });
+		teardown.push(() => win.removeEventListener(type, onInput, { capture: true }));
+	}
 
 	if (typeof ResizeObserver !== 'undefined') {
 		const observer = new ResizeObserver(() => nudgeRepaint());

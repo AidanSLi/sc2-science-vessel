@@ -107,14 +107,39 @@ So three call sites share the one helper, and each covers a case the others do n
   repaints.
 - **Layout changes**, via a `ResizeObserver` in `observeRepaints`, because resizing is what repaints an
   analysis view.
-- **A 2-second interval**, in `observeRepaints`, because the interactions that repaint are not
-  enumerable — scrolling, route changes, focus changes, content updates — and a style assignment every
-  two seconds is far cheaper than an invisible window. It also covers the empty first composite: an
-  explicit set of nudges at 400 ms, 1400 ms and 3000 ms after mount settles the startup case.
+- **Input events**, because these are what the user actually hit. `pointermove`, `pointerdown`,
+  `pointerup`, `wheel`, `keydown` and `scroll` are all listened for, passive and in the capture
+  phase.
+- **A 2-second interval**, as a floor for the interactions that are not enumerable, plus settling
+  nudges at 400 ms, 1400 ms and 3000 ms after mount for the empty first composite.
 
-Measured after the change: six consecutive launches each at `alpha=0: 0 = 0.0 %`; twelve rounds of
-six rapid resizes-plus-click-plus-scroll cycles all at 100.0 %; overlay mode still 100.0 % with
-the guide visibly intact.
+### Repair is not enough — it has to be the same frame
+
+The first version of this fix had only the timer, and it did not fix the reported bug, which is the
+most useful thing in this record. Hovering a link or drag-selecting text invalidates only the few
+pixels under the pointer, and the backing store is discarded, so the window collapses to exactly
+those pixels. Measured by driving the real window from XTEST and sampling every 60 ms:
+
+| Action | painted during | painted after the 2 s timer |
+| --- | --- | --- |
+| drag-selection across body text | **12.7 %** | 100.0 % |
+| hovering nav links | 100.0 % (not reproduced by synthetic motion alone) | — |
+
+So the timer did *repair* the collapse — but only up to two seconds later, and the blank window in
+between is precisely the symptom the user reported. A repair is only useful if it lands before the
+frame that shows the damage.
+
+Input listeners do: they fire after the event that caused the damage and before the composite, so
+the nudge is part of the same frame. Moving the trigger there took the same drag-selection from
+worst-case 12.7 % to **worst-case 100.0 %** — never visibly blank.
+
+A continuous `requestAnimationFrame` nudge also worked, and was rejected: measured at 3 % of one
+core while the app sat idle, against **0 %** for the event listeners. For a resident app that
+watches for a game, the idle cost is the deciding factor.
+
+Measured after the final change: six consecutive launches each at `alpha=0: 0 = 0.0 %`; twelve
+rounds of six rapid resizes-plus-click-plus-scroll cycles all at 100.0 %; drag-selection worst case
+100.0 %; overlay mode still 100.0 % with the guide visibly intact; idle CPU 0 %.
 
 A Rust attempt at the same thing — re-asserting `set_background_color(Some(ANALYSIS_BACKGROUND))`
 once the window is mapped, in `warm_or_reveal_main_window` — was measured and **did not work**: two
