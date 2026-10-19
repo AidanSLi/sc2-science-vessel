@@ -343,6 +343,28 @@ and there is no extra multiplier to apply.
   colour as a GTK CSS rule that paints **in front of** the page (measured: `(10,13,18)` gave a
   98.4% white window, `(0,8,255)` gave `(0,255,255)`). Set it on both mode branches, since the
   startup path applies a stored mode without the other having been left. See ADR 0018.
+- **A transparent web view loses its buffer on every incremental repaint.** Under the software
+  renderer this app is forced onto (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, ADR 0005), a view that was
+  transparent **from creation** — which `"transparent": true` in `src-tauri/tauri.conf.json` makes
+  it, via wry 0.57.0 `src/webkitgtk/mod.rs:293-295` — discards its backing store whenever anything
+  repaints and redraws only the damaged rectangle. Measured in a harness with the real guide page:
+  12.6% of the window painted after six one-line text updates under a transparent view, against
+  100% under an opaque one. Outside a match nothing repaints, so the fault is invisible there and
+  looks "fixed" every time it is checked outside a game. The remedy is to alternate the root
+  element's opacity between `1` and `0.999` on every clock tick, which forces a full-layer
+  composite (`BuildOrderGuide.svelte`); the values **must** alternate, because re-assigning the
+  same value is not a change and does not recomposite. Element promotion hints (`will-change`,
+  `transform`, `contain`, `backdrop-filter`, a steady `opacity`) and an opaque root background were
+  all measured and do **not** help. See ADR 0019.
+- **An override-redirect flip destroys the window's position and click-through.** Changing the
+  attribute means `hide()` → `set_override_redirect()` → `show()`, which recreates the `GdkWindow`,
+  so the window manager places the new one from scratch — for an unmanaged window, dead centre of
+  the screen. Measured: the overlay jumped from its anchored `(24,24)` to `(1730,754)`, the exact
+  centre of a 3840x2160 screen for a 380x600 window, which is what the player saw as "briefly moves
+  to the correct position before it snaps back". Every flip, in **both** directions, must re-assert
+  the anchor (`reposition_for_overlay`) and click-through (`set_ignore_cursor_events`) afterwards.
+  Anything else held in window-manager state rather than in the app must be re-asserted too.
+  See ADR 0019.
 - **The hotkey chooses the mode it reveals, and it chooses it in Rust.** The user's rule: the
   hotkey brings up the **analysis window while SC2 is running but no match is on**, and the
   guide only during a match. A hidden WebKitGTK webview has its page timers suspended, so the

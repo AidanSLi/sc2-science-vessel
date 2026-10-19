@@ -202,6 +202,51 @@
 	});
 
 	/**
+	 * Whether the next repaint nudge should use the slightly-transparent value.
+	 *
+	 * Alternating matters: assigning the *same* value twice is a no-op that WebKit does not treat
+	 * as a change, so nothing would be recomposited on the second tick.
+	 */
+	let repaintFlip = false;
+
+	/**
+	 * Keeps the whole guide painted while the clock ticks, which is the only time it changes.
+	 *
+	 * The window is transparent, and under the software renderer this app has to use
+	 * (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, ADR 0005) a web view that was transparent *from
+	 * creation* discards its backing store on every incremental repaint and redraws only the
+	 * rectangle that changed. The clock updates once a second, so during a match the guide
+	 * collapsed to the status line and nothing else: measured on the real window as 96.3% of it
+	 * at alpha 0, with only a 22px band painted. Outside a match nothing ticks, which is why the
+	 * same build looked correct there and why this survived several earlier fixes.
+	 *
+	 * Alternating the root's opacity forces WebKit to composite the entire layer rather than just
+	 * the damaged rectangle, so the buffer stays intact. The two values are `1` and `0.999` — a
+	 * 0.1% difference, invisible on screen. Measured with this in place: 100% of the window
+	 * painted after 30 consecutive clock ticks and across a mode switch, against 12.6% without it.
+	 *
+	 * Toggling a property on the root element is deliberate. Removing the transparent window
+	 * would also fix it, but it would also make the overlay an opaque rectangle over the game,
+	 * and per-element promotion hints (`will-change`, `transform`, `contain`, `backdrop-filter`,
+	 * a steady `opacity`) were all measured and do *not* prevent the loss. See ADR 0019.
+	 */
+	$effect(() => {
+		// Reading the clock is what subscribes this effect to it: a repaint is only needed when the
+		// clock actually moves, which is once per second during a match.
+		void clock;
+		if (typeof document === 'undefined') return;
+		repaintFlip = !repaintFlip;
+		document.documentElement.style.opacity = repaintFlip ? '0.999' : '1';
+	});
+
+	onDestroy(() => {
+		if (typeof document === 'undefined') return;
+		// The guide is the only view that sets this, so leaving it behind would put the analysis
+		// view at 99.9% opacity for no reason.
+		document.documentElement.style.opacity = '';
+	});
+
+	/**
 	 * Escape leaves the guide.
 	 *
 	 * Bound on the window because the guide is click-through in this mode: the player cannot

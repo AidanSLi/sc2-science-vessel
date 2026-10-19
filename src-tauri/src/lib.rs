@@ -1621,6 +1621,13 @@ fn release_unmanaged_and_visibility(window: &WebviewWindow, restore_visibility: 
     use std::sync::atomic::Ordering;
     if WINDOW_UNMANAGED.swap(false, Ordering::SeqCst) {
         platform::set_unmanaged_and_visibility(window, false, restore_visibility);
+        // The release is the same hide/show cycle as the claim, so it has the same fault: the
+        // fresh managed window is placed by the window manager rather than at the anchor it had
+        // before. Re-asserting it here keeps the overlay in the game's corner across a
+        // flip back to managed, instead of jumping to the middle of the screen.
+        if restore_visibility {
+            reposition_for_overlay(window, None);
+        }
         // Defensive: an earlier build claimed always-on-top alongside the override-redirect
         // state, and a window carrying that flag after being released is in `AboveLayer`, which
         // is above any ordinary window the player raises. Clearing it here means the release
@@ -1647,6 +1654,19 @@ fn claim_unmanaged(window: &WebviewWindow) -> bool {
     }
     if platform::set_unmanaged(window, true) {
         WINDOW_UNMANAGED.store(true, Ordering::SeqCst);
+        // The claim hides and re-shows the window, which destroys the `GdkWindow` and lets the
+        // toolkit and the window manager place the new one from scratch. Nothing in the flip
+        // carries the old position over, and the window manager's default for a fresh unmanaged
+        // window is the centre of the screen — measured: an overlay anchored at `(24, 24)`
+        // reappeared at `(1730, 754)`, exactly the centre of a 3840x2160 screen for a 380x600
+        // window. Because the re-show lands *after* the caller's move request, the visible result
+        // is the reported "briefly moves to the correct position, then snaps back to the centre".
+        //
+        // Re-asserting the anchor here is what makes the position survive the flip. The game
+        // rectangle is looked up again rather than threaded through the callers, so this is
+        // correct whichever path reached it, and it costs one lookup per game rather than per
+        // poll.
+        reposition_for_overlay(window, None);
         // Click-through is a window-manager property that a hide/show cycle drops, and this
         // window is being re-shown precisely while the player is mid-game. Losing it here would
         // put an invisible 380x300 rectangle over the game that eats every click aimed at
