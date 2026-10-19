@@ -202,3 +202,69 @@ screen centre on exactly that transition.
 - A transparent web view is now a known-brittle part of the stack on the software renderer. If the
   overlay is ever moved to its own window (the pre-rewrite design), that window must not be created
   transparent and then rely on nothing being repainted.
+
+## This is an upstream WebKitGTK bug, not ours (added 2026-10-19)
+
+Recorded so nobody re-litigates the diagnosis, and so the workaround can be removed when the
+upstream cause is gone.
+
+**It is damage-aware compositing, and it is new in WebKitGTK 2.54.** The 2.54 release notes
+describe the Skia compositor replacing TextureMapper and state that compositing "now uses this
+information [damage], and does so by default: each draw the compositor issues is restricted to the
+damaged rectangles". The same notes say the non-accelerated path was reworked to "always use damage
+information to limit repaints". Both sentences describe exactly the behaviour measured here: the
+window keeps only the damaged rectangle and everything else is never painted.
+
+This machine has `webkit2gtk-4.1` **2.54.1**, so it is inside the affected range.
+
+Upstream and downstream reports, all describing this application's symptom:
+
+- WebKit bug **305758**, "[GTK][WPE][Coordinated Graphics] Rendering glitches with
+  UseDamagingInformationForCompositing and semi-transparent background color", filed 2026-01-19,
+  RESOLVED FIXED (commit `67222a7c5bfe228fc5992fa390b42ba7b4772fda`, reviewed by Carlos Garcia
+  Campos). The fix is: "If a non-opaque background color was specified and
+  UseDamagingInformationForCompositing feature was on, rendering glitches occurred." That is
+  precisely a transparent view plus damage-restricted compositing.
+- WebKit bug **305560**, "[GTK][WPE][Coordinated Graphics] rendering glitches for unpainted tiles",
+  same author, same week — unpainted tiles after scrolling.
+- tauri-apps/tauri **#12800**, "[bug] Webview doesn't update when the window is transparent",
+  labelled `status: upstream`. Reported on webkit2gtk 2.46.6, where it persisted; the reporter
+  found it *went away* on 2.48.0 and the issue was closed as upstream.
+- tauri-apps/wry **#1524**, "Window Tranparency Not Rendering Correctly", still open. Its
+  reproduction is the same shape as ours: switch the page content and the old pixels are never
+  cleared. The reporter's own diagnosis — "the pixels of the background are not labeled as
+  damaged" — matches the measurement here.
+- **Cap #2624** is the closest match and independently names the trigger: forcing
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` on WebKitGTK 2.54 makes a transparent window paint *only the
+  repainted regions*, "a hovered button, a toggle being animated". That is this app's bug, on the
+  same version, for the same reason.
+- readest **#4904** reached the same conclusion from the other direction, choosing to keep the
+  Linux window opaque so it "can't turn invisible".
+
+### Why GTK4 / WebKitGTK 6.0 would not fix it on its own
+
+The damage-tracking code is shared between the GTK and WPE ports, and the two bug reports above are
+titled `[GTK][WPE]` because the fault is in the shared compositor. GTK4 and WebKitGTK 6.0 are a new
+*API version* over the same rendering stack — the `webkitgtk.org` migration guide frames it as
+"webkitgtk-6.0 is a new API version ... for GTK 4 and libsoup 3", an API and toolkit migration, not
+a different compositor. Moving to GTK4 would not, by itself, remove damage-restricted compositing.
+
+What would actually change the outcome, in order of preference:
+
+1. **A WebKitGTK release containing the 305758 fix.** Cheapest and most likely. Worth re-testing the
+   overlay and the analysis view after each `webkit2gtk-4.1` upgrade; if the toggle is no longer
+   needed it can be deleted, and ADR 0019's harness is the way to check.
+2. **Restore the DMABUF/GPU path on this machine.** The GPU path is the one that is not
+   damage-restricted in the same way, and it is already the app's preferred path — it fails here with
+   `Failed to create GBM buffer of size 1280x820: Invalid argument`, which is why ADR 0005 forces the
+   software renderer. Re-checked on 2026-10-19: with `WEBKIT_DISABLE_DMABUF_RENDERER=0` the analysis
+   window measured **100.0 % alpha-0**, i.e. the GPU path fails completely and the software path is
+   mandatory on this hardware. Fixing the GBM failure (driver/EGL configuration, not this app) would
+   remove the whole problem class.
+3. **A Tauri/wry that uses GTK4 + WebKitGTK 6.0.** Only helps if it also ships a WebKitGTK with the
+   compositor fix, since the bug is below the API version. As of 2026-10 it is not available:
+   tauri **#14684** ("feat(linux): migrate to GTK4 and WebKitGTK 6.0") and wry **#1767** ("Migrating
+   to gtk4/webkit6") are both still open, and the `3.0` milestone is ~25 % complete. Adopting it now
+   would be a large change for no guaranteed benefit.
+
+The keep-alive nudge stays until one of those lands. It is cheap: 0 % idle CPU, measured.
