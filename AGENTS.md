@@ -302,6 +302,15 @@ and there is no extra multiplier to apply.
   overlay. Verify with `XGetImage` on the window's own buffer, **not** a screenshot — the page
   reports correct layout while the pixels are absent, and a screenshot cropped to the window's
   rectangle happily captures whatever fullscreen window is stacked on top of it. See ADR 0017.
+- **`position: fixed` also takes an element out of the document's scroll flow.** `.app-surface`
+  has to be the page's scroll container in its own right (`overflow-y: auto`), or no page can be
+  scrolled at all: measured, `document.scrollingElement.scrollHeight` equalled `clientHeight`
+  exactly (656 = 656) while the surface's own content was 905px tall, and every route was
+  silently clipped with wheel events doing nothing. Making it the scroll container needs the
+  styled-scrollbar treatment below, otherwise the fault described there comes straight back —
+  measured at 380x600, all three variants (`no scroll container`, `auto`, `auto` + styled bar)
+  painted 100%, so the styled bar is what keeps it safe. Verify scrolling is real by hashing the
+  window buffer before and after a wheel event, not by trusting `overflow-y`.
 - **The guide's step list must have a styled scrollbar.** The GTK-themed default scrollbar is
   the only part of the page WebKit hands to its own composited layer under the CPU path
   (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, ADR 0005), and everything outside that layer is dropped:

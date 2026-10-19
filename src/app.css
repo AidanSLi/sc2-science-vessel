@@ -94,6 +94,36 @@ html.is-transparent-window .guide-rule {
 	position: fixed;
 	inset: 0;
 	background-color: #0a0d12;
+	/*
+	 * This element is the page's scroll container, not just its background.
+	 *
+	 * `position: fixed` removes it from the flow, so the document itself has nothing to scroll:
+	 * measured, `document.scrollingElement.scrollHeight` equalled `clientHeight` exactly (656 =
+	 * 656) while the surface's own content was 905px tall. The overflow was simply clipped and no
+	 * page could be scrolled at all. Giving the surface `overflow-y: auto` makes it the scroll
+	 * container in its own right, which is also where the content already is.
+	 */
+	overflow-y: auto;
+}
+
+/*
+ * That scroll container needs a styled scrollbar, for the reason recorded under `.guide-steps`:
+ * under a transparent webview the *default* GTK-themed scrollbar is the only part of the page
+ * WebKit hands to a separate compositing layer, and everything outside it goes unpainted. Measured
+ * on this exact element at 380x600: 100% painted with no scroll container, 100% with one using a
+ * styled scrollbar. The bar is kept rather than hidden so long pages still show that they scroll.
+ */
+.app-surface::-webkit-scrollbar {
+	width: 6px;
+}
+
+.app-surface::-webkit-scrollbar-thumb {
+	background-color: var(--color-surface-700);
+	border-radius: 3px;
+}
+
+.app-surface::-webkit-scrollbar-track {
+	background-color: transparent;
 }
 
 /*
