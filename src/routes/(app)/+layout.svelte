@@ -9,6 +9,7 @@
 	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
+	import TitleBar from '#lib/components/TitleBar.svelte';
 
 	let { children } = $props();
 
@@ -63,9 +64,22 @@
 </script>
 
 <div class="flex min-h-full flex-col">
+	<!--
+		The window's own title bar, replacing the native decoration (see TitleBar.svelte). It sits
+		ABOVE the app header and shares its surface colour, so the two read as one continuous piece
+		of chrome flush with the content rather than as a title bar stacked on a page.
+	-->
+	<TitleBar />
 	<header class="border-b border-surface-800 bg-surface-900/70">
 		<div class="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
-			<a href="/" class="text-sm font-semibold tracking-tight">SC2 Science Vessel</a>
+			<a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-tight">
+				<!--
+					A thin accent rule in front of the wordmark, echoing the console's light strip. It
+					takes its colour from the theme, so the nav identifies the theme at a glance.
+				-->
+				<span class="h-3.5 w-[2px] rounded-full bg-accent" aria-hidden="true"></span>
+				SC2 Science Vessel
+			</a>
 			<nav class="flex gap-1" aria-label="Main">
 				{#each nav as item (item.href)}
 					{@const active = page.url.pathname === item.href}

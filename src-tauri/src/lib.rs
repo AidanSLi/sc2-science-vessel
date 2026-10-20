@@ -636,7 +636,18 @@ fn apply_window_mode(
             // mapped.
             platform::allow_focus(&window);
             window.set_always_on_top(false)?;
-            window.set_decorations(true)?;
+            // Decorations stay OFF in analysis mode too, and the window is dragged and closed
+            // from the app's own title bar instead. A native title bar is drawn by the toolkit
+            // in the desktop's own theme, so it cannot follow a race theme: the user asked for a
+            // title bar flush with the app content, and a GTK headerbar strip above a Terran
+            // panel is exactly the seam that request was about. The chrome is part of the page,
+            // and `platform::allow_focus` above is what keeps it interactive.
+            //
+            // The cost is that a frameless window has no toolkit-provided resize border, so the
+            // page supplies its own (see `TitleBar.svelte`), calling `start_resize_dragging`.
+            window.set_decorations(false)?;
+            // A shadow survives the lost decoration on platforms that draw it as its own frame;
+            // asking explicitly keeps a frameless window separable from the desktop behind it.
             window.set_shadow(true)?;
             window.set_resizable(true)?;
             window.set_skip_taskbar(false)?;
@@ -1124,6 +1135,48 @@ fn set_build_presets(
     Ok(cleaned)
 }
 
+/// Returns the stored appearance theme.
+///
+/// Read separately from [`get_settings`] because the frontend needs it *before* the first paint,
+/// while the settings page needs the whole document much later. Fetching the whole document to
+/// learn one string would put a larger IPC round trip on the critical path of every launch.
+///
+/// @param app The running app handle.
+/// @returns The stored theme id, or the default when the stored one is not a known theme.
+#[tauri::command]
+fn get_theme(app: tauri::AppHandle) -> String {
+    let settings = Settings::load(&app);
+    if settings::THEMES.contains(&settings.theme.as_str()) {
+        settings.theme
+    } else {
+        settings::DEFAULT_THEME.to_string()
+    }
+}
+
+/// Stores the appearance theme.
+///
+/// Rejects an unknown theme instead of persisting it: the frontend is the only caller, so an
+/// unrecognised id means a version skew between the bundle and the shell, and writing it would
+/// leave the app on unstyled fallbacks with nothing to explain why. Returning the error lets the
+/// settings page say so rather than silently showing a theme that is not in effect.
+///
+/// @param app The running app handle.
+/// @param theme The requested theme id.
+/// @returns The stored theme id.
+#[tauri::command]
+fn set_theme(app: tauri::AppHandle, theme: String) -> Result<String, String> {
+    if !settings::THEMES.contains(&theme.as_str()) {
+        return Err(format!(
+            "{theme} is not a theme this build knows; expected one of {}",
+            settings::THEMES.join(", ")
+        ));
+    }
+    let mut current = Settings::load(&app);
+    current.theme = theme.clone();
+    current.save(&app)?;
+    Ok(theme)
+}
+
 /// Turns the resident start on or off and persists it.
 ///
 /// Turning it **on takes effect immediately**: the window is hidden here, because a setting
@@ -1274,6 +1327,8 @@ pub fn run() {
             reveal_window_mode_command,
             overlay_supported_command,
             get_settings,
+            get_theme,
+            set_theme,
             set_overlay_shortcut,
             set_start_hidden,
             set_launch_at_login,

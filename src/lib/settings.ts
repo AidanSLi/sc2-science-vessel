@@ -33,6 +33,14 @@ export interface AppSettings {
 	startHidden: boolean;
 	/** Whether the app should be launched when the user logs in. */
 	launchAtLogin: boolean;
+	/**
+	 * The appearance theme id, one of `THEMES` in `#lib/theme`.
+	 *
+	 * Typed as a plain string, not `ThemeId`, because the value comes from a file the user may
+	 * have edited and from a shell that may be a different version; `parseTheme` is what turns
+	 * it into a usable id.
+	 */
+	theme: string;
 }
 
 /** Matchup (or `ZvX` wildcard) to build order id. */
@@ -47,7 +55,8 @@ const FALLBACK_SETTINGS: AppSettings = {
 	replayRoots: [],
 	buildPresets: {},
 	startHidden: true,
-	launchAtLogin: false
+	launchAtLogin: false,
+	theme: 'terran'
 };
 
 /** Outcome of a rebind attempt, so the UI can distinguish success from substitution. */
@@ -80,7 +89,8 @@ export async function loadSettings(): Promise<AppSettings> {
 			// behaviour the app had, and reading it as "visible" would change how the app
 			// behaves on upgrade.
 			startHidden: settings.startHidden ?? true,
-			launchAtLogin: settings.launchAtLogin ?? false
+			launchAtLogin: settings.launchAtLogin ?? false,
+			theme: settings.theme ?? 'terran'
 		};
 	} catch {
 		return { ...FALLBACK_SETTINGS };

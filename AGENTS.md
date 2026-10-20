@@ -590,6 +590,25 @@ and there is no extra multiplier to apply.
 - Keep the capability scope minimal. The only network permission the app has is
   `http:default` limited to `http://localhost:6119/*` and `http://127.0.0.1:6119/*` — if
   a change needs a broader scope, it needs an ADR first.
+- **A theme is a CSS variable override keyed on `html[data-theme]`, never a component
+  change.** Tailwind 4 has no config file: its palette IS the `@theme` block in
+  `src/app.css`, so `bg-surface-900` and friends follow the active theme for free. A theme
+  switch must stay an attribute write — repainting the tree from JavaScript is exactly the
+  large in-place redraw ADR 0019 measured at 12.6% painted under a transparent view. Add a
+  theme as one CSS block plus one entry in `THEMES` (`src/lib/theme.ts`) and validate the id
+  on BOTH sides (`parseTheme` and `settings::THEMES`): it crosses a hand-editable settings
+  file and an IPC reply, and an unrecognised id reaching `data-theme` unstyles the app.
+- **Semantic colours are not themed.** `--color-ahead`, `--color-behind`, `--color-neutral`
+  and `--color-race-*` are constant across themes: green means "ahead of the build" in
+  every race's console, so theming it would change what the guide's main signal means per
+  skin. See ADR 0020.
+- **The window is frameless in both modes and the title bar is page markup**
+  (`src/lib/components/TitleBar.svelte`), because a toolkit headerbar follows the desktop's
+  theme and cannot follow ours. Two consequences are easy to break: a drag region's resize
+  handles must be SIBLINGS of it (a handle inside a drag region starts a move, not a
+  resize), and removing the component makes the window immovable and unresizable, so the
+  `core:window:allow-start-*dragging` / minimise / maximise / close capabilities are
+  load-bearing and must not be pruned.
 
 ## Packaging and platform support
 

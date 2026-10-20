@@ -18,6 +18,26 @@ use tauri::{AppHandle, Manager};
 /// `Ctrl+Alt+Del`) and does not collide with a StarCraft II default hotkey.
 pub const DEFAULT_OVERLAY_SHORTCUT: &str = "Ctrl+Alt+O";
 
+/// The appearance theme used when the user has never chosen one.
+///
+/// Terran: it is the neutral, low-chroma palette the rest of the app was designed against, and
+/// it is the closest of the four to a plain dark UI, so a first run looks like an analysis tool
+/// rather than like a game skin the user did not ask for.
+pub const DEFAULT_THEME: &str = "terran";
+
+/// Every theme id the shell will store.
+///
+/// Listed here and not just in the frontend because the shell is the one writing the value: a
+/// typo or a stale frontend bundle would otherwise persist an id that no CSS rule matches, and
+/// the app would come up on unstyled fallbacks with no error to explain it. Must stay in step
+/// with `THEMES` in `src/lib/theme.ts`.
+pub const THEMES: &[&str] = &["terran", "zerg", "protoss", "space"];
+
+/// Returns the default theme as an owned string, for serde's `default` attribute.
+fn default_theme() -> String {
+    DEFAULT_THEME.to_string()
+}
+
 /// Keys tried, in order, when the configured key cannot be registered.
 ///
 /// Registration fails when another application already owns the combination, and the
@@ -77,6 +97,13 @@ pub struct Settings {
     /// for an installed build — see [`Settings::autostart_available`].
     #[serde(default)]
     pub launch_at_login: bool,
+    /// The appearance theme: one of [`THEMES`].
+    ///
+    /// Stored as a plain string rather than an enum so that a theme this build does not know —
+    /// written by a newer version, or hand-edited — degrades to the default appearance instead
+    /// of failing to parse the whole settings document and losing every other setting with it.
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 /// Returns the default accelerator as an owned string, for serde's `default` attribute.
@@ -97,6 +124,7 @@ impl Default for Settings {
             build_presets: std::collections::BTreeMap::new(),
             start_hidden: true,
             launch_at_login: false,
+            theme: default_theme(),
         }
     }
 }

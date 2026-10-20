@@ -22,6 +22,7 @@
 		type PresetMap
 	} from '#lib/settings';
 	import type { BuildOrder, Matchup } from '#lib/types';
+	import { DEFAULT_THEME, parseTheme, saveTheme, THEMES, type ThemeId } from '#lib/theme';
 
 	/**
 	 * The matchups worth offering a preset for, in the order they are shown.
@@ -63,6 +64,12 @@
 		detail: null
 	});
 	let busy = $state(false);
+	/** The active appearance theme. */
+	let theme = $state<ThemeId>(DEFAULT_THEME);
+	/** Message about the last theme change, since a silent save is indistinguishable from a lost one. */
+	let themeMessage = $state<string | null>(null);
+	let themeError = $state(false);
+
 	/**
 	 * Whether this display server lets the overlay track the game window.
 	 *
@@ -167,6 +174,10 @@
 		overlayShortcut = settings.overlayShortcut;
 		startHidden = settings.startHidden;
 		launchAtLogin = settings.launchAtLogin;
+		// Read from the DOM rather than fetched again: the root layout already applied the stored
+		// theme to `<html>` before this page mounted, so the attribute is the authoritative value
+		// and asking the shell twice would only open a window where the two disagree.
+		theme = parseTheme(document.documentElement.dataset.theme);
 		presets = (await loadPresets()).presets;
 		// Swallowed rather than surfaced: this is a diagnostic, and a failure to read it must not
 		// make the settings page look broken. The `null` state already means "not answered".
@@ -232,8 +243,39 @@
 		}
 	}
 
+	/**
+	 * Applies a theme choice and persists it.
+	 *
+	 * The colour change is immediate — `saveTheme` writes the attribute before the IPC round
+	 * trip, so the picker never lags behind the click — and the stored value is then re-read, so a
+	 * refused write reverts the screen instead of leaving it showing a theme that was not saved.
+	 *
+	 * @param value The theme id chosen in the dropdown.
+	 */
+	async function updateTheme(value: string) {
+		const chosen = parseTheme(value);
+		theme = chosen;
+		themeMessage = null;
+		themeError = false;
+		try {
+			theme = await saveTheme(chosen);
+			const label = THEMES.find((entry) => entry.id === theme)?.label ?? theme;
+			themeMessage = `${label} is now the app's appearance.`;
+		} catch (err) {
+			themeMessage = `Could not save the theme: ${
+				err instanceof Error ? err.message : String(err)
+			}`;
+			themeError = true;
+		}
+	}
+
 	/** Formats the stored accelerator for display in a fixed modifier order. */
 	const shortcutDisplay = $derived(normaliseAccelerator(overlayShortcut));
+
+	/** The description of the selected theme, shown under the dropdown. */
+	const themeDescription = $derived(
+		THEMES.find((entry) => entry.id === theme)?.description ?? ''
+	);
 </script>
 
 <svelte:window
@@ -246,6 +288,37 @@
 
 <section class="space-y-8">
 	<h1 class="text-xl font-semibold">Settings</h1>
+
+	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
+		<h2 class="text-sm font-semibold">Appearance</h2>
+		<p class="mt-2 max-w-2xl text-sm text-ink-300">
+			Sets the colours for the background, panels and accents throughout the app, following
+			the look of the race consoles in StarCraft II. The overlay changes with it, and stays
+			readable over the game either way.
+		</p>
+		<label class="mt-4 grid max-w-2xl gap-1 text-xs text-ink-500">
+			Theme
+			<!--
+				The select's appearance and chevron come from the global `select` rule in app.css;
+				without it GTK draws the control in the desktop's light theme, ignoring our colours.
+			-->
+			<select
+				class="w-full max-w-xs rounded border border-edge/80 bg-surface-950 px-2 py-1.5 text-sm text-ink-300 focus:border-accent focus:outline-none"
+				value={theme}
+				onchange={(event) => void updateTheme(event.currentTarget.value)}
+			>
+				{#each THEMES as entry (entry.id)}
+					<option value={entry.id}>{entry.label}</option>
+				{/each}
+			</select>
+		</label>
+		{#if themeDescription}
+			<p class="mt-2 max-w-2xl text-xs text-ink-500">{themeDescription}</p>
+		{/if}
+		{#if themeMessage}
+			<p class="mt-3 text-xs {themeError ? 'text-amber-400' : 'text-ink-400'}">{themeMessage}</p>
+		{/if}
+	</div>
 
 	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
 		<h2 class="text-sm font-semibold">Startup</h2>

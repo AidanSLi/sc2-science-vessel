@@ -13,16 +13,27 @@
  * matters because the overlay sits over unpredictable game imagery.
  */
 @theme {
-	--color-surface-950: oklch(0.16 0.012 258);
-	--color-surface-900: oklch(0.2 0.014 258);
-	--color-surface-850: oklch(0.24 0.016 258);
-	--color-surface-800: oklch(0.28 0.018 258);
-	--color-surface-700: oklch(0.36 0.02 258);
+	/*
+	 * The Terran values live here because Tailwind 4 generates its utilities from this block and
+	 * needs a value at `:root`. Every other theme overrides these same variables further down, at
+	 * `html[data-theme="…"]`, which outranks `:root` on specificity — so `bg-surface-900` and
+	 * friends follow the active theme without a single component changing.
+	 */
+	--color-surface-950: oklch(0.17 0.008 250);
+	--color-surface-900: oklch(0.215 0.012 250);
+	--color-surface-850: oklch(0.255 0.014 250);
+	--color-surface-800: oklch(0.3 0.016 250);
+	--color-surface-700: oklch(0.37 0.018 250);
 
-	--color-ink-100: oklch(0.96 0.005 258);
-	--color-ink-300: oklch(0.82 0.008 258);
-	--color-ink-500: oklch(0.66 0.01 258);
+	--color-ink-100: oklch(0.95 0.006 220);
+	--color-ink-300: oklch(0.8 0.012 220);
+	--color-ink-500: oklch(0.64 0.014 220);
 
+	/*
+	 * Semantic colours, deliberately constant across themes: green means "ahead of the build"
+	 * and red means "behind it" in every race's console, and a theme that recoloured them would
+	 * make the guide's most load-bearing signal mean something different per skin.
+	 */
 	--color-race-terran: oklch(0.72 0.13 235);
 	--color-race-protoss: oklch(0.8 0.14 85);
 	--color-race-zerg: oklch(0.68 0.16 320);
@@ -30,6 +41,88 @@
 	--color-ahead: oklch(0.78 0.15 150);
 	--color-behind: oklch(0.7 0.17 25);
 	--color-neutral: oklch(0.66 0.01 258);
+
+	/* The theme's two signature colours: `accent` for interactive affordances, `accent-2` for the
+	 * second colour each race's console is built from (Terran amber, Protoss cobalt, …). */
+	--color-accent: oklch(0.78 0.16 150);
+	--color-accent-2: oklch(0.76 0.12 70);
+
+	/* Chrome: the frame the title bar is machined from. `edge` is the hairline that separates
+	 * panels from their surroundings, `sheen` the highlight along a raised edge. */
+	--color-edge: oklch(0.42 0.016 250);
+	--color-sheen: oklch(0.62 0.02 250);
+}
+
+/*
+ * Themes.
+ *
+ * Colours are sampled from the real in-game consoles rather than invented: the Terran console is
+ * brushed steel over near-black with a green glow strip and amber warning stripes, the Zerg one
+ * is carapace brown-violet with magenta gems, the Protoss one is ivory-gold with a cobalt light
+ * channel. Only the neutrals and the two accents change; the semantic colours above do not.
+ *
+ * Every theme keeps `--color-ink-100` on `--color-surface-950` at >= 7:1 (WCAG AAA for body
+ * text), because the overlay sits over unpredictable game imagery and a themed skin that made
+ * text harder to read over a mineral field would be a downgrade, not a feature.
+ */
+html[data-theme='terran'] {
+	--color-surface-950: oklch(0.17 0.008 250);
+	--color-surface-900: oklch(0.215 0.012 250);
+	--color-surface-850: oklch(0.255 0.014 250);
+	--color-surface-800: oklch(0.3 0.016 250);
+	--color-surface-700: oklch(0.37 0.018 250);
+	--color-ink-100: oklch(0.95 0.006 220);
+	--color-ink-300: oklch(0.8 0.012 220);
+	--color-ink-500: oklch(0.64 0.014 220);
+	--color-accent: oklch(0.78 0.16 150);
+	--color-accent-2: oklch(0.76 0.12 70);
+	--color-edge: oklch(0.44 0.014 240);
+	--color-sheen: oklch(0.66 0.014 230);
+}
+
+html[data-theme='zerg'] {
+	--color-surface-950: oklch(0.155 0.028 310);
+	--color-surface-900: oklch(0.205 0.038 310);
+	--color-surface-850: oklch(0.25 0.045 312);
+	--color-surface-800: oklch(0.3 0.05 314);
+	--color-surface-700: oklch(0.4 0.058 316);
+	--color-ink-100: oklch(0.95 0.018 320);
+	--color-ink-300: oklch(0.82 0.035 320);
+	--color-ink-500: oklch(0.66 0.05 322);
+	--color-accent: oklch(0.7 0.19 315);
+	--color-accent-2: oklch(0.8 0.17 135);
+	--color-edge: oklch(0.45 0.07 316);
+	--color-sheen: oklch(0.68 0.08 318);
+}
+
+html[data-theme='protoss'] {
+	--color-surface-950: oklch(0.16 0.03 265);
+	--color-surface-900: oklch(0.21 0.038 265);
+	--color-surface-850: oklch(0.255 0.044 265);
+	--color-surface-800: oklch(0.31 0.05 265);
+	--color-surface-700: oklch(0.4 0.055 265);
+	--color-ink-100: oklch(0.96 0.014 90);
+	--color-ink-300: oklch(0.84 0.026 88);
+	--color-ink-500: oklch(0.68 0.03 86);
+	--color-accent: oklch(0.84 0.14 85);
+	--color-accent-2: oklch(0.68 0.19 262);
+	--color-edge: oklch(0.48 0.06 265);
+	--color-sheen: oklch(0.7 0.07 260);
+}
+
+html[data-theme='space'] {
+	--color-surface-950: oklch(0.15 0.035 265);
+	--color-surface-900: oklch(0.19 0.04 266);
+	--color-surface-850: oklch(0.23 0.045 267);
+	--color-surface-800: oklch(0.28 0.05 268);
+	--color-surface-700: oklch(0.38 0.055 268);
+	--color-ink-100: oklch(0.96 0.012 250);
+	--color-ink-300: oklch(0.84 0.03 255);
+	--color-ink-500: oklch(0.68 0.04 258);
+	--color-accent: oklch(0.82 0.1 225);
+	--color-accent-2: oklch(0.72 0.16 300);
+	--color-edge: oklch(0.46 0.06 266);
+	--color-sheen: oklch(0.72 0.06 250);
 }
 
 html,
@@ -93,7 +186,12 @@ html.is-transparent-window .guide-rule {
 .app-surface {
 	position: fixed;
 	inset: 0;
-	background-color: #0a0d12;
+	/*
+	 * Opaque, and driven by the theme token rather than hardcoded: this element IS the window's
+	 * background under a transparent webview (ADR 0017), so a literal hex here would pin the app
+	 * to one theme's darkest surface forever.
+	 */
+	background-color: var(--color-surface-950);
 	/*
 	 * This element is the page's scroll container, not just its background.
 	 *
@@ -193,7 +291,129 @@ html.is-transparent-window {
 	background-color: transparent;
 }
 
-/* Long lists of build steps are compared column-wise, so digits must not jitter. */
+/*
+ * The Space theme's sky.
+ *
+ * Two layers, both pure CSS: a fixed starfield built from repeating radial gradients at two
+ * scales (small dense specks, sparse bright ones) that drift very slowly, and nebulae painted as
+ * a few large, heavily blurred radial gradients in the theme's accent hues. Nothing here is a
+ * canvas or an image, so it costs no memory and survives the CPU compositor path that ADR 0005
+ * forces on this app.
+ *
+ * Deliberately slow and low-contrast: this sits behind tables of replay data that people read for
+ * minutes at a time, so motion has to be noticeable only when looked for. `prefers-reduced-motion`
+ * stops it outright — the global rule at the end of this file covers that.
+ */
+/*
+ * `fixed`, not `absolute`. `.app-surface` is itself `position: fixed` and is the page's scroll
+ * container, so an absolutely-positioned child is sized to the *viewport* but scrolls with the
+ * content — the sky would scroll away and leave the bottom of a long page empty. Fixed keeps the
+ * field covering the window while the content moves over it.
+ */
+.theme-sky {
+	position: fixed;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.theme-sky::before,
+.theme-sky::after {
+	content: '';
+	position: absolute;
+	/* Two screens tall so the drift can translate by exactly one screen and loop seamlessly. */
+	inset: -50% 0 0 0;
+	background-repeat: repeat;
+}
+
+.theme-sky::before {
+	background-image:
+		radial-gradient(1px 1px at 20px 30px, rgb(255 255 255 / 0.75), transparent),
+		radial-gradient(1px 1px at 130px 80px, rgb(210 230 255 / 0.5), transparent),
+		radial-gradient(1px 1px at 90px 170px, rgb(255 255 255 / 0.6), transparent),
+		radial-gradient(2px 2px at 160px 120px, rgb(255 255 255 / 0.85), transparent);
+	background-size: 220px 200px;
+	animation: theme-sky-drift 240s linear infinite;
+}
+
+.theme-sky::after {
+	background-image:
+		radial-gradient(1px 1px at 70px 60px, rgb(255 255 255 / 0.9), transparent),
+		radial-gradient(1px 1px at 310px 240px, rgb(200 220 255 / 0.7), transparent),
+		radial-gradient(2px 2px at 240px 40px, rgb(255 255 255 / 0.75), transparent);
+	background-size: 420px 380px;
+	animation: theme-sky-drift 520s linear infinite reverse;
+}
+
+/*
+ * Only the Space theme paints a sky, and only the analysis surface does. The overlay never shows
+ * one: it is a transparent window over a live game, and stars behind a build order would be
+ * unreadable noise.
+ */
+.theme-nebulae {
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	background-image:
+		radial-gradient(60% 45% at 18% 22%, color-mix(in oklab, var(--color-accent-2) 30%, transparent), transparent 70%),
+		radial-gradient(55% 40% at 82% 30%, color-mix(in oklab, var(--color-accent) 22%, transparent), transparent 72%),
+		radial-gradient(70% 50% at 55% 95%, color-mix(in oklab, var(--color-accent-2) 18%, transparent), transparent 75%);
+	filter: blur(40px);
+	animation: theme-nebula-breathe 90s ease-in-out infinite alternate;
+}
+
+@keyframes theme-sky-drift {
+	from {
+		transform: translate3d(0, 0, 0);
+	}
+	to {
+		transform: translate3d(0, 50%, 0);
+	}
+}
+
+@keyframes theme-nebula-breathe {
+	from {
+		opacity: 0.55;
+		scale: 1;
+	}
+	to {
+		opacity: 0.85;
+		scale: 1.08;
+	}
+}
+
+/*
+ * `<select>` elements have to be drawn by us, not by GTK.
+ *
+ * An unstyled select on Linux is rendered by the toolkit in the *desktop's* own light theme:
+ * measured in a screenshot of the Settings page, the theme picker was a solid white box with grey
+ * placeholder text in the middle of a dark panel — and it ignored `background-color` and `color`
+ * entirely, because the native appearance wins over both. That is a themed app's worst case: one
+ * control that looks like it belongs to another program.
+ *
+ * `appearance: none` hands the box back to CSS, and the chevron is then ours to draw. It is a
+ * background-image rather than a separate element so that it applies to every select without a
+ * wrapper — the app has three, in two different components, and a per-site fix would let the next
+ * one regress. The glyph is inline SVG in the *stroke colour only* (`currentColor` does not reach a
+ * background image), so it is drawn in a neutral ink tone and inherits nothing.
+ *
+ * `color-scheme: dark` is the other half: it tells the platform to draw the select's popup list —
+ * which is still native, and cannot be styled — in its dark variant, so the open menu matches the
+ * closed control instead of flashing white.
+ */
+select {
+	appearance: none;
+	color-scheme: dark;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%237d8794' stroke-width='1.4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 0.5rem center;
+	background-size: 0.6rem auto;
+	padding-right: 1.6rem;
+}
+
+/*
+ * Long lists of build steps are compared column-wise, so digits must not jitter.
+ */
 .tabular {
 	font-variant-numeric: tabular-nums;
 }

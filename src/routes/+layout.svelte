@@ -25,10 +25,19 @@
 	import type { WindowMode } from '#lib/window-mode';
 	import { initWindowMode, revealWindowMode, setWindowMode, windowMode } from '#lib/window-mode';
 	import { observeRepaints } from '#lib/repaint';
+	import { initTheme, onThemeChange, themeHasSky, type ThemeId } from '#lib/theme';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
 	import '../app.css';
 
 	let { children } = $props();
+
+	/**
+	 * The active theme, for deciding whether to render the ambient background layers.
+	 *
+	 * Only the celestial theme draws anything, and only in the analysis view — the overlay is a
+	 * transparent window over a live game where stars would be unreadable noise.
+	 */
+	let theme = $state<ThemeId>('terran');
 
 	/**
 	 * The mode the previous poll decided on, or `null` before the first one.
@@ -100,6 +109,19 @@
 	}
 
 	onMount(() => {
+		// Apply the stored theme before anything else on this mount. `app.html` already carries the
+		// default so the first frame is never unthemed; this replaces it with the user's choice.
+		void initTheme().then((chosen) => {
+			theme = chosen;
+		});
+		// The CSS palette follows `data-theme` on its own, but the sky layer is markup, so this
+		// component has to hear about a change made in Settings. Without it the ambient background
+		// would only appear after a restart, which is exactly the kind of "it works if you relaunch
+		// it" bug that reads as a caching problem rather than a missing listener.
+		const stopTheme = onThemeChange((chosen) => {
+			theme = chosen;
+		});
+
 		// Returns the listener's teardown. Needed rather than optional: the shell reports a mode
 		// that changed without the frontend being involved, so a leaked listener would keep
 		// updating a store nothing is rendering.
@@ -137,6 +159,7 @@
 		return () => {
 			clearInterval(timer);
 			stopListening?.();
+			stopTheme();
 			stopRepainting();
 		};
 	});
@@ -153,6 +176,17 @@
 		See the `.app-surface` comment in app.css for the measurements.
 	-->
 	<div class="app-surface h-full w-full">
-		{@render children()}
+		<!--
+			The ambient background sits UNDER the page content: `position: fixed` so it covers the
+			window while the surface scrolls, and `pointer-events: none` so it never takes a click.
+			Only the Space theme renders it. See `.theme-sky` in app.css.
+		-->
+		{#if themeHasSky(theme)}
+			<div class="theme-nebulae" aria-hidden="true"></div>
+			<div class="theme-sky" aria-hidden="true"></div>
+		{/if}
+		<div class="relative">
+			{@render children()}
+		</div>
 	</div>
 {/if}
