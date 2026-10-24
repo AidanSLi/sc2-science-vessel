@@ -602,6 +602,15 @@ and there is no extra multiplier to apply.
   and `--color-race-*` are constant across themes: green means "ahead of the build" in
   every race's console, so theming it would change what the guide's main signal means per
   skin. See ADR 0020.
+- **Nothing in a theme animates.** Under the software compositor this app is forced onto
+  (ADR 0005), a *continuously* animating element costs **100% of a core** whatever its size —
+  six 4x4px dots at 60fps measured the same as two full-window gradient layers. The cost is per
+  *composite*, not per painted pixel, because the software path repaints the whole window on
+  every frame. The Space field is therefore static (ADR 0021). Two measurement rules that cost
+  hours and must not be repeated: measure the **`WebKitWebProcess` child**, not the app process
+  (the page renders in the child, so the parent shows ~1% either way), and measure in **steady
+  state** — the first ~20 s after launch is page load, and reading at 10 s gave 35.7% for a build
+  that measures 3.4% at 30 s.
 - **The window is frameless in both modes and the title bar is page markup**
   (`src/lib/components/TitleBar.svelte`), because a toolkit headerbar follows the desktop's
   theme and cannot follow ours. Two consequences are easy to break: a drag region's resize
