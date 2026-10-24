@@ -602,6 +602,30 @@ and there is no extra multiplier to apply.
   and `--color-race-*` are constant across themes: green means "ahead of the build" in
   every race's console, so theming it would change what the guide's main signal means per
   skin. See ADR 0020.
+- **The two hues have fixed duties: chrome takes `accent-2`, identity takes `accent`.** Every
+  card, table rule, input edge and button outline is the SECONDARY; the current page in the
+  nav, the wordmark and a page title are the PRIMARY. Both hues are therefore on every screen
+  without competing, and "which colour should this be" has an answer that is not a judgement
+  call. A new component follows the rule rather than inventing a third use. See ADR 0024.
+- **A card is `class="panel"`, never a utility chain.** The twenty-six copies of
+  `rounded-lg border border-surface-800 bg-surface-900/60 p-4` were what made the palettes read
+  as single-colour: a neutral hairline on every panel showed neither hue. `.panel`,
+  `.section-heading`, `.page-heading`, `.button`, `.nav-active`/`.nav-idle` and `.panel-lit` in
+  `src/app.css` are the whole vocabulary — extend them instead of adding a fourth variant of the
+  same string.
+- **A theme's secondary must be a real colour: chroma ≥ 0.06, hue ≥ 40° from the accent.**
+  `src/lib/theme.test.ts` reads `src/app.css` and asserts both. This is not pedantry — Terran
+  shipped with a 0.038-chroma secondary that was indistinguishable from its surface ramp, so a
+  "two-colour" palette rendered as one, and the token looked perfectly fine in review.
+- **Gradient text needs a `forced-colors` fallback.** `-webkit-text-fill-color: transparent`
+  (as `.page-heading` uses) makes the text invisible in forced-colours mode unless the rule
+  hands the colour back, which is an accessibility failure that no screenshot on a normal
+  desktop reveals.
+- **The overlay does not use the app's ink scale; it uses `.guide-ink*` plus a text halo.**
+  The guide sits over unpredictable game imagery, so its text needs a ramp whose floor is
+  higher than `ink-500` and a hard 1px outline (`text-shadow`, NOT a blurred one) to survive
+  bright terrain. Using `text-ink-500` in the guide is a bug even though it looks right on a
+  dark map; measured over a lit slope the rows vanished. See ADR 0024.
 - **Nothing animates on Linux; the Space theme animates on Windows only.** Under the software
   compositor this app is forced onto (ADR 0005), a *continuously* animating element costs **100%
   of a core** whatever its size — six 4x4px dots at 60fps measured the same as two full-window

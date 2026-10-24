@@ -92,7 +92,7 @@
 	const unitsInWindow = $derived(located.filter((death) => !death.isWorker && inWindow(death)).length);
 </script>
 
-<figure class="rounded-lg border border-surface-800 bg-surface-900/60 p-3">
+<figure class="panel p-3">
 	<figcaption class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
 		<h3 class="text-xs font-semibold tracking-wide text-ink-300 uppercase">Where units died</h3>
 		<span class="tabular text-xs text-ink-500">
@@ -107,7 +107,7 @@
 
 	{#if located.length === 0}
 		<div
-			class="flex items-center justify-center rounded border border-dashed border-surface-700 text-xs text-ink-500"
+			class="flex items-center justify-center rounded border border-dashed border-edge/45 text-xs text-ink-500"
 			style="height: {SIZE}px"
 		>
 			No unit deaths were recorded in this game.
@@ -115,7 +115,7 @@
 	{:else}
 		<svg
 			viewBox="0 0 {SIZE} {SIZE}"
-			class="mx-auto block h-auto w-full max-w-[{SIZE}px] touch-none select-none rounded border border-surface-800 bg-surface-950"
+			class="mx-auto block h-auto w-full max-w-[{SIZE}px] touch-none select-none rounded border border-edge/55 bg-surface-950"
 			role="img"
 			aria-label="Schematic map of unit deaths; positions are relative, not drawn on terrain"
 		>

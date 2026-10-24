@@ -287,10 +287,10 @@
 />
 
 <section class="space-y-8">
-	<h1 class="text-xl font-semibold">Settings</h1>
+	<h1 class="page-heading text-xl font-semibold">Settings</h1>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">Appearance</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">Appearance</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			Sets the colours for the background, panels and accents throughout the app, following
 			the look of the race consoles in StarCraft II. The overlay changes with it, and stays
@@ -316,12 +316,12 @@
 			<p class="mt-2 max-w-2xl text-xs text-ink-500">{themeDescription}</p>
 		{/if}
 		{#if themeMessage}
-			<p class="mt-3 text-xs {themeError ? 'text-amber-400' : 'text-ink-400'}">{themeMessage}</p>
+			<p class="mt-3 text-xs {themeError ? 'text-behind' : 'text-ink-400'}">{themeMessage}</p>
 		{/if}
 	</div>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">Startup</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">Startup</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			The app is meant to be resident: it can start hidden, stay out of the way, and tell you
 			how to open the overlay the moment a game begins.
@@ -359,12 +359,12 @@
 			</span>
 		</label>
 		{#if startupMessage}
-			<p class="mt-3 text-xs {startupError ? 'text-amber-400' : 'text-ink-400'}">{startupMessage}</p>
+			<p class="mt-3 text-xs {startupError ? 'text-behind' : 'text-ink-400'}">{startupMessage}</p>
 		{/if}
 	</div>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">Game clock (SC2 Client API)</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">Game clock (SC2 Client API)</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			The overlay follows the game's own clock, read from the client on
 			<code class="rounded bg-surface-950 px-1 py-0.5 text-xs">localhost:{CLIENT_API_PORT}</code
@@ -400,7 +400,7 @@
 
 		<button
 			type="button"
-			class="mt-4 rounded bg-surface-800 px-3 py-1.5 text-sm text-ink-300 hover:bg-surface-700"
+			class="button mt-4"
 			onclick={checkNow}
 			disabled={busy}
 		>
@@ -415,8 +415,8 @@
 		{/if}
 	</div>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">Overlay</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">Overlay</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			The toggle key works anywhere, including over the game, so it is worth choosing
 			something you will not hit by accident.
@@ -424,15 +424,15 @@
 		<dl class="tabular mt-3 grid gap-2 text-sm sm:grid-cols-[10rem_1fr]">
 			<dt class="text-ink-500">Toggle key</dt>
 			<dd class="flex flex-wrap items-center gap-2">
-				<kbd class="rounded border border-surface-700 bg-surface-950 px-2 py-0.5 font-mono text-xs">
+				<kbd class="rounded border border-edge/60 bg-surface-950 px-2 py-0.5 font-mono text-xs">
 					{shortcutDisplay}
 				</kbd>
 				{#if isTauri()}
 					<button
 						type="button"
 						class="rounded border px-2 py-0.5 text-xs {recording
-							? 'border-amber-600 bg-amber-950/40 text-amber-300'
-							: 'border-surface-700 bg-surface-800 text-ink-300 hover:bg-surface-700'}"
+							? 'border-behind bg-behind/15 text-behind'
+							: 'border-edge/70 bg-surface-800 text-ink-300 hover:border-accent-2/70 hover:bg-surface-700'}"
 						onclick={() => {
 							recording = true;
 							shortcutMessage = null;
@@ -451,7 +451,7 @@
 				{:else if overlaySupported}
 					Yes — the guide is placed in the game window's top-left corner and moves with it.
 				{:else}
-					<span class="text-amber-400">
+					<span class="text-behind">
 						No on this display server. The guide still opens and still follows the game clock, but
 						it cannot be placed next to the game window or guaranteed to stay above it. See
 						<code class="rounded bg-surface-950 px-1 py-0.5 text-xs">docs/adr/0008</code>.
@@ -465,14 +465,14 @@
 				stays registered, the window can still be toggled from the Builds page.
 			</dd>		</dl>
 		{#if shortcutMessage}
-			<p class="mt-3 text-xs {shortcutError ? 'text-amber-400' : 'text-ink-400'}">
+			<p class="mt-3 text-xs {shortcutError ? 'text-behind' : 'text-ink-400'}">
 				{shortcutMessage}
 			</p>
 		{/if}
 	</div>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">Build preset per matchup</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">Build preset per matchup</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			When a game starts the overlay loads the build you chose for that matchup, so there is
 			nothing to pick mid-game. This is the only reason the overlay reads the client API
@@ -490,7 +490,7 @@
 				<label class="grid gap-1 text-xs text-ink-500">
 					{matchup}
 					<select
-						class="rounded border border-surface-700 bg-surface-950 px-2 py-1 text-sm text-ink-300"
+						class="rounded border border-edge/60 bg-surface-950 px-2 py-1 text-sm text-ink-300"
 						value={presets[matchup] ?? ''}
 						onchange={(event) => updatePreset(matchup, event.currentTarget.value)}
 					>
@@ -513,8 +513,8 @@
 		{/if}
 	</div>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">Privacy</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">Privacy</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			Replays never leave this machine. The app makes exactly one kind of network request: to
 			the game client on loopback. Importing a build snapshot is the only outbound feature,

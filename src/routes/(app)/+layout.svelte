@@ -53,12 +53,12 @@
 				return { colour: 'bg-race-protoss', text: 'Replay open' };
 			case 'unavailable':
 				return inBrowser
-					? { colour: 'bg-surface-700', text: 'Desktop app only' }
+					? { colour: 'bg-accent-2/70', text: 'Desktop app only' }
 					: { colour: 'bg-behind', text: 'Game not detected' };
 			case 'error':
 				return { colour: 'bg-behind', text: 'Client API error' };
 			default:
-				return { colour: 'bg-surface-700', text: 'Checking…' };
+				return { colour: 'bg-accent-2/70', text: 'Checking…' };
 		}
 	});
 </script>
@@ -70,14 +70,28 @@
 		of chrome flush with the content rather than as a title bar stacked on a page.
 	-->
 	<TitleBar />
-	<header class="border-b border-surface-800 bg-surface-900/70">
+	<!--
+		The header's bottom rule is the theme's SECONDARY colour, not a neutral hairline. Every screen
+		in the app is under this bar, so it is the one border the user cannot avoid seeing, and leaving
+		it neutral was the single biggest reason the palettes read as single-colour.
+	-->
+	<header
+		class="border-b bg-surface-900/70"
+		style="border-bottom-color: color-mix(in oklab, var(--color-accent-2) 38%, transparent)"
+	>
 		<div class="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
 			<a href="/" class="flex items-center gap-2 text-sm font-semibold tracking-tight">
 				<!--
 					A thin accent rule in front of the wordmark, echoing the console's light strip. It
 					takes its colour from the theme, so the nav identifies the theme at a glance.
 				-->
-				<span class="h-3.5 w-[2px] rounded-full bg-accent" aria-hidden="true"></span>
+				<span class="h-4 w-[3px] rounded-full bg-accent" aria-hidden="true"></span>
+				<!--
+					A second, shorter bar in the secondary colour. The pair is what makes the wordmark two-tone
+					rather than "a title with a coloured tick": on every screen the primary hue sits directly
+					beside the secondary one, which is the cheapest possible statement of the scheme.
+				-->
+				<span class="h-2.5 w-[2px] rounded-full bg-accent-2" aria-hidden="true"></span>
 				SC2 Science Vessel
 			</a>
 			<nav class="flex gap-1" aria-label="Main">
@@ -86,9 +100,7 @@
 					<a
 						href={item.href}
 						aria-current={active ? 'page' : undefined}
-						class="rounded px-3 py-1.5 text-sm {active
-							? 'bg-surface-800 text-ink-100'
-							: 'text-ink-500 hover:bg-surface-850 hover:text-ink-300'}"
+						class="rounded px-3 py-1.5 text-sm {active ? 'nav-active' : 'nav-idle'}"
 					>
 						{item.label}
 					</a>
@@ -105,7 +117,10 @@
 		{@render children()}
 	</main>
 
-	<footer class="border-t border-surface-800 px-6 py-3">
+	<footer
+		class="border-t px-6 py-3"
+		style="border-top-color: color-mix(in oklab, var(--color-accent-2) 30%, transparent)"
+	>
 		<p class="mx-auto max-w-6xl text-xs text-ink-500">
 			Runs entirely on this machine. No account, no upload, no telemetry. The only network
 			request the app can make is to the game client on localhost.

@@ -251,10 +251,16 @@
 	class="guide-panel flex h-full flex-col text-ink-100"
 	style="--guide-veil: {panelOpacity}%"
 >
-	<header class="flex items-center justify-between gap-2 guide-rule border-b px-3 py-2">
+	<!--
+		The overlay keeps the two-tone scheme but leans on TEXT colour rather than fills, because it
+		sits over unpredictable game imagery: a tinted panel edge is invisible over a dark map and a
+		glaring one over snow. So the title takes the primary, the matchup takes the secondary, and the
+		only background is still the panel's own veil.
+	-->
+	<header class="guide-rule flex items-center justify-between gap-2 border-b px-3 py-2">
 		<div class="min-w-0">
-			<h1 class="truncate text-sm font-semibold">{build.title}</h1>
-			<p class="tabular text-xs text-ink-500">
+			<h1 class="truncate text-sm font-semibold text-accent">{build.title}</h1>
+			<p class="tabular text-xs text-accent-2">
 				{liveMatchup ?? presetMatchup ?? build.matchup}
 			</p>
 		</div>
@@ -263,13 +269,13 @@
 	<p
 		class="guide-rule border-b px-3 py-1.5 text-[11px] {live.status === 'live'
 			? 'text-ahead'
-			: 'text-ink-500'}"
+			: 'guide-ink-dim'}"
 		role="status"
 	>
 		{statusText}
 	</p>
 	{#if statusHint}
-		<p class="guide-rule guide-veil border-b px-3 py-1.5 text-[11px] text-ink-500">
+		<p class="guide-rule guide-veil guide-ink-faint border-b px-3 py-1.5 text-[11px]">
 			{statusHint}
 		</p>
 	{/if}
@@ -279,17 +285,26 @@
 			{@const isNext = index === progress.nextIndex}
 			{@const isPast = index <= progress.lastDueIndex}
 			{@const isMissed = progress.missedIndexes.includes(index)}
+			<!--
+				The row colours are the guide's own, not the app's ink ramp — see `.guide-*` in app.css. The
+				app's `ink-500` is tuned for a `#12281d` panel, and at that lightness it disappears over
+				bright terrain, so the overlay uses a ramp with a higher floor and leans on the halo for
+				the last of it.
+			-->
 			<li
 				class="tabular guide-veil flex items-center gap-2 px-3 py-1.5 text-sm {isNext
-					? 'font-semibold text-ink-100'
+					? 'guide-next font-semibold guide-ink-strong'
 					: isMissed
 						? 'text-behind'
 						: isPast
-							? 'text-ink-500 line-through'
-							: 'text-ink-300'}"
+							? 'guide-ink-dim line-through'
+							: 'guide-ink'}"
 			>
-				<span class="w-6 shrink-0 text-right text-xs text-ink-500">{stepNumber(index)}</span>
-				<span class="w-9 shrink-0 text-right text-xs text-ink-500">{step.supply}</span>
+				<span
+					class="guide-ink-faint w-6 shrink-0 text-right text-xs {isNext ? 'text-accent' : ''}"
+					>{stepNumber(index)}</span
+				>
+				<span class="guide-ink-faint w-9 shrink-0 text-right text-xs">{step.supply}</span>
 				<span class="w-11 shrink-0 text-xs">{formatGameTime(step.timeInGameSeconds)}</span>
 				<span class="min-w-0 flex-1 truncate">{step.name}</span>
 			</li>
@@ -297,12 +312,13 @@
 	</ol>
 
 	<footer class="guide-rule border-t px-3 py-2">
-		<p class="tabular text-xs text-ink-300">
+		<p class="tabular guide-ink text-xs">
 			{#if progress.nextIndex >= 0}
 				{@const next = build.steps[progress.nextIndex]}
-				Next: {next.supply} &nbsp;|&nbsp; {next.name}
+				<span class="text-accent-2">Next:</span>
+				{next.supply} &nbsp;|&nbsp; {next.name}
 			{:else}
-				Build complete
+				<span class="text-accent-2">Build complete</span>
 			{/if}
 		</p>
 	</footer>

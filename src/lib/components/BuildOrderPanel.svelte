@@ -122,14 +122,14 @@
 
 <section class="space-y-4">
 	<header class="flex flex-wrap items-baseline justify-between gap-2">
-		<h2 class="text-sm font-semibold">Build order</h2>
+		<h2 class="section-heading text-sm font-semibold">Build order</h2>
 		<p class="text-xs text-ink-500">
 			{player.buildOrder.length} steps tracked · matching tolerance ±10 s
 		</p>
 	</header>
 
 	{#if player.buildOrder.length === 0}
-		<p class="rounded-lg border border-dashed border-surface-700 bg-surface-900/40 p-4 text-sm text-ink-500">
+		<p class="rounded-lg border border-dashed border-edge/45 bg-surface-900/40 p-4 text-sm text-ink-500">
 			No build order could be recovered for {player.name}. The tracker stream in this replay has no
 			build events for them.
 		</p>
@@ -150,7 +150,7 @@
 				</label>
 				<select
 					id="reference"
-					class="w-full rounded border border-surface-700 bg-surface-900 px-2 py-1.5 text-sm text-ink-100"
+					class="w-full rounded border border-edge/60 bg-surface-900 px-2 py-1.5 text-sm text-ink-100"
 					bind:value={chosen}
 				>
 					{#each ranked as entry, index (entry.name + index)}
@@ -163,7 +163,7 @@
 				</select>
 
 				{#if selected}
-					<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-3">
+					<div class="panel p-3">
 						<p class="tabular text-sm text-ink-100">
 							{Math.round(selected.similarity * 100)}% of the plan
 							<span class="text-ink-500">
@@ -222,7 +222,7 @@
 					{/each}
 				</ol>
 				{#if selected && selected.missing.length > 0}
-					<div class="rounded border border-surface-800 bg-surface-900/40 p-2">
+					<div class="rounded border border-edge/55 bg-surface-900/40 p-2">
 						<p class="text-xs text-ink-500">Planned but never seen in this game</p>
 						<ul class="mt-1 space-y-0.5">
 							{#each selected.missing.slice(0, 12) as entry (entry.name + entry.expectedSecond)}

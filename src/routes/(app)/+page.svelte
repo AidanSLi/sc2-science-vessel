@@ -37,7 +37,7 @@
 
 <section class="space-y-8">
 	<div>
-		<h1 class="text-2xl font-semibold tracking-tight">SC2 Science Vessel</h1>
+		<h1 class="page-heading text-2xl font-semibold tracking-tight">SC2 Science Vessel</h1>
 		<p class="mt-2 max-w-3xl text-sm text-ink-300">
 			Replay analysis and a build-order coach for StarCraft II, running entirely on this
 			machine. No account, no upload, and no network beyond the game client on loopback.
@@ -45,26 +45,26 @@
 	</div>
 
 	<div class="grid gap-4 md:grid-cols-3">
-		<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-			<h2 class="text-sm font-semibold">Analysis</h2>
+		<div class="panel p-4">
+			<h2 class="section-heading text-sm font-semibold">Analysis</h2>
 			<p class="mt-1 text-xs text-ink-500">
 				Worker, economy, production and battle metrics from your own replays.
 			</p>
 		</div>
-		<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-			<h2 class="text-sm font-semibold">Build orders</h2>
+		<div class="panel p-4">
+			<h2 class="section-heading text-sm font-semibold">Build orders</h2>
 			<p class="tabular mt-1 text-xs text-ink-500">{buildSummary}</p>
 		</div>
-		<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-			<h2 class="text-sm font-semibold">Overlay</h2>
+		<div class="panel p-4">
+			<h2 class="section-heading text-sm font-semibold">Overlay</h2>
 			<p class="mt-1 text-xs text-ink-500">
 				Always on top, click-through, following the game's own clock.
 			</p>
 		</div>
 	</div>
 
-	<div class="rounded-lg border border-surface-800 p-4">
-		<h2 class="text-sm font-semibold">
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">
 			Milestones <span class="font-normal text-ink-500">· {remaining} remaining</span>
 		</h2>
 		<ul class="mt-3 space-y-1.5">
@@ -82,8 +82,8 @@
 		</ul>
 	</div>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-6">
-		<h2 class="text-sm font-semibold">What this build is</h2>
+	<div class="panel p-6">
+		<h2 class="section-heading text-sm font-semibold">What this build is</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			A beta: replay analysis, a build-order library and a live overlay, in one window that
 			changes shape with what you are doing. The app waits for StarCraft&nbsp;II in the

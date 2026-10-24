@@ -161,7 +161,7 @@
 <section class="space-y-6">
 	<div class="flex flex-wrap items-end justify-between gap-4">
 		<div>
-			<h1 class="text-xl font-semibold">Matches</h1>
+			<h1 class="page-heading text-xl font-semibold">Matches</h1>
 			<p class="tabular mt-1 text-sm text-ink-500">
 				{#if loading}
 					{progress ?? 'Scanning…'}
@@ -175,7 +175,7 @@
 		</div>
 		<button
 			type="button"
-			class="rounded bg-surface-800 px-3 py-1.5 text-sm text-ink-300 hover:bg-surface-700 disabled:opacity-50"
+			class="button disabled:opacity-50"
 			onclick={rescan}
 			disabled={loading || roots.length === 0}
 		>
@@ -184,14 +184,14 @@
 	</div>
 
 	{#if unavailable}
-		<p class="rounded-lg border border-surface-800 bg-surface-900/60 p-4 text-sm text-ink-300">
+		<p class="panel p-4  text-sm text-ink-300">
 			{unavailable}
 		</p>
 	{/if}
 
 	{#if roots.length === 0 && settingsLoaded && !unavailable}
-		<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-6">
-			<h2 class="text-sm font-semibold">Where are your replays?</h2>
+		<div class="panel p-6">
+			<h2 class="section-heading text-sm font-semibold">Where are your replays?</h2>
 			<p class="mt-2 max-w-2xl text-sm text-ink-300">
 				The app reads <code class="text-ink-100">.SC2Replay</code> files from disk and never uploads
 				them. On Linux they are usually inside the Wine prefix the game runs from, which is why the
@@ -204,7 +204,7 @@
 						<li class="flex flex-wrap items-center gap-2">
 							<button
 								type="button"
-								class="rounded bg-surface-800 px-3 py-1.5 text-sm text-ink-200 hover:bg-surface-700"
+								class="button"
 								onclick={() => addRoot(candidate)}
 							>
 								Use this folder
@@ -220,8 +220,8 @@
 			{/if}
 		</div>
 	{:else if roots.length > 0}
-		<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-			<h2 class="text-sm font-semibold">Replay folders</h2>
+		<div class="panel p-4">
+			<h2 class="section-heading text-sm font-semibold">Replay folders</h2>
 			<ul class="mt-3 space-y-1">
 				{#each roots as root (root)}
 					<li class="flex flex-wrap items-center gap-2">
@@ -244,12 +244,12 @@
 					type="text"
 					bind:value={newRoot}
 					placeholder="/path/to/StarCraft II/Replays/Multiplayer"
-					class="min-w-72 flex-1 rounded border border-surface-700 bg-surface-950 px-3 py-1.5 text-sm text-ink-100 placeholder:text-ink-500"
+					class="min-w-72 flex-1 rounded border border-edge/60 bg-surface-950 px-3 py-1.5 text-sm text-ink-100 placeholder:text-ink-500"
 					onkeydown={(e) => e.key === 'Enter' && addRoot(newRoot)}
 				/>
 				<button
 					type="button"
-					class="rounded bg-surface-800 px-3 py-1.5 text-sm text-ink-300 hover:bg-surface-700"
+					class="button"
 					onclick={() => addRoot(newRoot)}
 				>
 					Add folder
@@ -279,7 +279,7 @@
 	{/if}
 
 	{#if roots.length > 0 && parsed.length === 0 && !loading && !unavailable}
-		<div class="rounded-lg border border-dashed border-surface-700 bg-surface-900/40 p-6 text-sm text-ink-300">
+		<div class="rounded-lg border border-dashed border-edge/45 bg-surface-900/40 p-6 text-sm text-ink-300">
 			<p class="font-semibold text-ink-100">No replays found in {roots.length === 1 ? 'that folder' : 'those folders'}.</p>
 			<p class="mt-1">
 				The scanner looks for files ending in <code class="text-ink-100">.SC2Replay</code>, case
@@ -298,12 +298,12 @@
 				type="text"
 				bind:value={filter}
 				placeholder="Filter by map, matchup or player"
-				class="min-w-64 flex-1 rounded border border-surface-700 bg-surface-950 px-3 py-1.5 text-sm text-ink-100 placeholder:text-ink-500"
+				class="min-w-64 flex-1 rounded border border-edge/60 bg-surface-950 px-3 py-1.5 text-sm text-ink-100 placeholder:text-ink-500"
 			/>
 			<span class="tabular text-xs text-ink-500">{rows.length} shown</span>
 		</div>
 
-		<div class="overflow-x-auto rounded-lg border border-surface-800">
+		<div class="panel overflow-x-auto">
 			<table class="w-full text-left text-sm">
 				<caption class="sr-only">Replays found in the configured folders, newest first</caption>
 				<thead class="bg-surface-900 text-xs text-ink-500 uppercase">
@@ -317,7 +317,7 @@
 				</thead>
 				<tbody>
 					{#each rows as record (record.path)}
-						<tr class="border-t border-surface-800 hover:bg-surface-900/60">
+						<tr class="border-t border-edge/40 hover:bg-surface-900/60">
 							<td class="px-3 py-2">
 								<a class="underline decoration-dotted hover:text-ink-100" href={analyzeHref(record)}>
 									{record.map_name || 'Unknown map'}
@@ -354,7 +354,7 @@
 	{/if}
 
 	{#if unreadable.length > 0}
-		<details class="rounded-lg border border-surface-800 bg-surface-900/60 p-4 text-sm">
+		<details class="panel p-4  text-sm">
 			<summary class="cursor-pointer text-ink-300">
 				{unreadable.length} file{unreadable.length === 1 ? '' : 's'} could not be read
 			</summary>

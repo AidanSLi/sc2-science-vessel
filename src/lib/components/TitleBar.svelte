@@ -118,17 +118,25 @@
 		aria-label={label}
 		title={label}
 		data-tauri-drag-region="false"
-		class="grid h-7 w-9 place-items-center rounded-sm text-ink-500 transition-colors {danger
+		class="grid h-7 w-9 place-items-center rounded-sm text-ink-400 transition-colors {danger
 			? 'hover:bg-behind/80 hover:text-ink-100'
-			: 'hover:bg-surface-700 hover:text-ink-100'}"
+			: 'hover:bg-surface-700 hover:text-accent'}"
 		onclick={onclick}
 	>
 		{@render icon()}
 	</button>
 {/snippet}
 
+<!--
+	The bar is the theme's SECONDARY colour, washed over the surface, with the bottom rule in the same
+	hue at full strength. Using `accent-2` here rather than a neutral `surface-900` is what makes the
+	window frame part of the palette: in Terran it is a steel strip, in Protoss a gold one. It is a
+	subtle wash (14%) rather than a solid fill so the title bar does not become the brightest thing on
+	screen, which a full-strength gold or orange would.
+-->
 <header
-	class="relative flex h-9 shrink-0 select-none items-center gap-3 border-b border-edge/70 bg-surface-900 px-3"
+	class="relative flex h-9 shrink-0 select-none items-center gap-3 border-b bg-surface-900 px-3"
+	style="background-color: color-mix(in oklab, var(--color-surface-900) 86%, var(--color-accent-2)); border-bottom-color: var(--color-accent-2)"
 >
 	<!--
 		The drag region is the whole bar minus the buttons: `data-tauri-drag-region` makes the
@@ -157,8 +165,8 @@
 		-->
 		<span class="flex shrink-0 items-center gap-[2px]" aria-hidden="true">
 			<span class="h-4 w-[3px] -skew-x-12 bg-accent"></span>
-			<span class="h-3 w-[3px] -skew-x-12 bg-accent/70"></span>
-			<span class="h-2 w-[3px] -skew-x-12 bg-accent-2/60"></span>
+			<span class="h-3 w-[3px] -skew-x-12 bg-accent/80"></span>
+			<span class="h-2.5 w-[3px] -skew-x-12 bg-accent-2"></span>
 		</span>
 		<h1 class="truncate text-xs font-medium uppercase tracking-[0.18em] text-ink-300">
 			{TITLE}

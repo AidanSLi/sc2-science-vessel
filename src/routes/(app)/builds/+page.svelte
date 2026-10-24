@@ -108,14 +108,14 @@
 <section class="space-y-6">
 	<div class="flex flex-wrap items-end justify-between gap-4">
 		<div>
-			<h1 class="text-xl font-semibold">Builds</h1>
+			<h1 class="page-heading text-xl font-semibold">Builds</h1>
 			<p class="tabular mt-1 text-sm text-ink-500">
 				{total} steps · ends at {formatGameTime(lastAt)} game time · preset for {build.matchup}
 			</p>
 		</div>
 		<button
 			type="button"
-			class="rounded bg-surface-800 px-3 py-1.5 text-sm text-ink-300 hover:bg-surface-700"
+			class="button"
 			disabled={!isTauri()}
 			onclick={enterGuideMode}
 		>
@@ -124,13 +124,13 @@
 	</div>
 
 	{#if overlayMessage}
-		<p class="rounded border border-surface-800 bg-surface-900/60 px-3 py-2 text-sm text-ink-300">
+		<p class="rounded border border-edge/55 bg-surface-900/60 px-3 py-2 text-sm text-ink-300">
 			{overlayMessage}
 		</p>
 	{/if}
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">{build.title}</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">{build.title}</h2>
 		<p class="mt-1 text-xs text-ink-500">
 			{#if build.source === 'bundled'}
 				From the bundled SpawningTool snapshot ({bundledSnapshotDate.slice(0, 10)}). Guide times
@@ -162,8 +162,8 @@
 		</ol>
 	</div>
 
-	<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-4">
-		<h2 class="text-sm font-semibold">{library.length} {build.matchup} build{library.length === 1 ? '' : 's'} in the library</h2>
+	<div class="panel p-4">
+		<h2 class="section-heading text-sm font-semibold">{library.length} {build.matchup} build{library.length === 1 ? '' : 's'} in the library</h2>
 		<p class="mt-1 text-xs text-ink-500">
 			Matchup exact matches first, then builds written against any opponent. Click one to
 			preview its steps above.
@@ -190,8 +190,8 @@
 		</ul>
 	</div>
 
-	<div class="rounded-lg border border-dashed border-surface-700 p-4">
-		<h2 class="text-sm font-semibold">Refreshing the library</h2>
+	<div class="rounded-lg border border-dashed border-edge/45 p-4">
+		<h2 class="section-heading text-sm font-semibold">Refreshing the library</h2>
 		<p class="mt-2 max-w-2xl text-sm text-ink-300">
 			The snapshot above is committed, so the app works offline. Refreshing it is the only part
 			of the app that uses the network, and it is an explicit command rather than something the

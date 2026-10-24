@@ -26,22 +26,22 @@ export const THEMES = [
 	{
 		id: 'terran',
 		label: 'Terran',
-		description: 'Brushed steel and near-black, with a green console glow and amber warning stripes.'
+		description: 'Green console panels with a gunmetal frame, after the Terran briefing screens.'
 	},
 	{
 		id: 'zerg',
 		label: 'Zerg',
-		description: 'Carapace brown-violet with magenta gem-light and a sickly green secondary.'
+		description: 'Violet carapace panels edged in rust, after the Zerg hive consoles.'
 	},
 	{
 		id: 'protoss',
 		label: 'Protoss',
-		description: 'Ivory-gold plating with a cobalt light channel running through it.'
+		description: 'Light-blue energy panels with gold plating, after the Protoss nexus console.'
 	},
 	{
 		id: 'space',
 		label: 'Space',
-		description: 'Dark navy with drifting stars and slow nebulae behind the content.'
+		description: 'Cyan instruments over deep space, with drifting stars and slow nebulae.'
 	}
 ] as const;
 

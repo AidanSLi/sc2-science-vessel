@@ -16,6 +16,8 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { readFileSync } from 'node:fs';
+
 import {
 	applyTheme,
 	DEFAULT_THEME,
@@ -136,6 +138,41 @@ describe('applyTheme', () => {
 		// so an unanswered query must leave animation disabled rather than enabled.
 		stubDocument();
 		await expect(initAnimations()).resolves.toBe(false);
+	});
+
+	it('gives every theme two distinct colours', () => {
+		// The palettes are CSS, so this reads the stylesheet rather than importing it — but the
+		// invariant it checks is the one the whole two-tone design rests on, and it broke before:
+		// Terran's secondary was 0.038 chroma, which is visually indistinguishable from the
+		// surface ramp it sat on, so the theme read as a single-colour theme even though it
+		// technically declared two. A test is the only thing that will notice that regressing.
+		// Read from disk rather than imported: a `?raw` import of `.css` returns an empty module
+		// here, because the Tailwind Vite plugin handles `.css` requests itself. See
+		// `src/node-shims.d.ts`.
+		const css = readFileSync(new URL('../app.css', import.meta.url), 'utf8');
+
+		for (const theme of THEMES) {
+			const block = css.split(`html[data-theme='${theme.id}']`)[1];
+			expect(block, `no block for ${theme.id}`).toBeTruthy();
+			const scoped = block.slice(0, block.indexOf('}'));
+			const accent = /--color-accent:\s*oklch\(([\d.]+) ([\d.]+) (\d+)\)/.exec(scoped);
+			const secondary = /--color-accent-2:\s*oklch\(([\d.]+) ([\d.]+) (\d+)\)/.exec(
+				scoped
+			);
+			expect(accent, `no accent for ${theme.id}`).toBeTruthy();
+			expect(secondary, `no accent-2 for ${theme.id}`).toBeTruthy();
+
+			// Different hues, not just different lightness: two greys are still one colour to the
+			// eye, and the secondary is supposed to be the *second* colour.
+			const hueGap = Math.abs(Number(accent![3]) - Number(secondary![3]));
+			expect(hueGap, `${theme.id} hues are too close`).toBeGreaterThan(40);
+
+			// Chroma is the "is this colour at all" measure. 0.06 is the floor at which the hue
+			// survives a screenshot, which is how the Terran palette was caught.
+			expect(Number(secondary![2]), `${theme.id} secondary is too grey`).toBeGreaterThanOrEqual(
+				0.06
+			);
+		}
 	});
 
 	it('treats the event payload as untrusted', () => {

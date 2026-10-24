@@ -188,7 +188,7 @@
 	const ticks = $derived(timeTicks(lengthSeconds));
 </script>
 
-<figure class="rounded-lg border border-surface-800 bg-surface-900/60 p-3">
+<figure class="panel p-3">
 	<figcaption class="mb-2 flex items-baseline justify-between gap-3">
 		<h3 class="text-xs font-semibold tracking-wide text-ink-300 uppercase">{title}</h3>
 		{#if secondFormatter && cursorSecond !== null}
@@ -198,7 +198,7 @@
 
 	{#if series.length === 0}
 		<div
-			class="flex items-center justify-center rounded border border-dashed border-surface-700 text-xs text-ink-500"
+			class="flex items-center justify-center rounded border border-dashed border-edge/45 text-xs text-ink-500"
 			style="height: {height}px"
 		>
 			{emptyMessage}

@@ -168,16 +168,16 @@
 <section class="space-y-6">
 	{#if loading}
 		<div>
-			<h1 class="text-xl font-semibold">Reading the replay…</h1>
+			<h1 class="page-heading text-xl font-semibold">Reading the replay…</h1>
 			<p class="mt-1 text-sm text-ink-500">
 				Decoding events from {replayPath.split('/').pop()}. A long 4v4 can take a few seconds.
 			</p>
 		</div>
-		<div class="h-64 animate-pulse rounded-lg border border-surface-800 bg-surface-900/40"></div>
+		<div class="panel h-64 animate-pulse"></div>
 	{:else if failure}
 		<div>
-			<h1 class="text-xl font-semibold">Could not analyse this replay</h1>
-			<p class="mt-2 rounded-lg border border-surface-800 bg-surface-900/60 p-4 text-sm text-ink-300">
+			<h1 class="page-heading text-xl font-semibold">Could not analyse this replay</h1>
+			<p class="panel mt-2 p-4 text-sm text-ink-300">
 				{failure}
 			</p>
 			<p class="mt-2 text-xs text-ink-500">
@@ -188,7 +188,7 @@
 	{:else if payload}
 		<div class="flex flex-wrap items-baseline justify-between gap-2">
 			<div>
-				<h1 class="text-xl font-semibold">{payload.map}</h1>
+				<h1 class="page-heading text-xl font-semibold">{payload.map}</h1>
 				<p class="tabular mt-1 text-sm text-ink-500">
 					{payload.matchup} · {formatGameTime(payload.lengthSeconds)} game time ·
 					patch {payload.release} · {payload.gameType}
@@ -208,7 +208,7 @@
 		<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
 			{#each payload.players as player (player.pid)}
 				{@const style = playerStyle(player, payload.players)}
-				<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-3">
+				<div class="panel p-3">
 					<div class="flex items-center gap-2">
 						<span
 							class="inline-block h-2.5 w-2.5 rounded-full"
@@ -381,7 +381,7 @@
 				{/each}
 
 				{#if payload.energy.inject.seconds.length === 0 && payload.energy.mule.seconds.length === 0 && payload.energy.chrono.seconds.length === 0}
-					<p class="rounded-lg border border-dashed border-surface-700 bg-surface-900/40 p-4 text-sm text-ink-500">
+					<p class="rounded-lg border border-dashed border-edge/45 bg-surface-900/40 p-4 text-sm text-ink-500">
 						No energy ability casts were found. The replay's game-event stream is empty for this
 						file, which happens when it was recorded by a build that does not write ability events.
 					</p>
@@ -458,7 +458,7 @@
 								},
 								{ favourable: 0, unfavourable: 0 }
 							)}
-							<div class="rounded-lg border border-surface-800 bg-surface-900/60 p-3">
+							<div class="panel p-3">
 								<div class="flex items-baseline justify-between gap-2">
 									<h3 class="text-sm font-medium">{player.name}</h3>
 									<span class="tabular text-xs text-ink-500">
@@ -499,7 +499,7 @@
 				</div>
 
 				{#if runbyWorst && runbyWorst.worstBurst > 0}
-					<p class="rounded-lg border border-surface-800 bg-surface-900/60 p-3 text-sm text-ink-300">
+					<p class="panel p-3  text-sm text-ink-300">
 						Worker losses: {runby.map((entry) => `${entry.name} ${entry.total}`).join(' · ')}.
 						{#if runbyWorst.worstBurst >= 5}
 							<span class="text-behind">
