@@ -54,12 +54,17 @@ fn main() {
 ///
 /// @returns `true` when this process became the watcher and `main` must not start a window.
 fn hand_over_to_the_watcher() -> bool {
+	// Neither block is the tail expression of the other platform, so each has to *be* the tail
+	// expression on the platform it compiles for. That is why these are two `cfg`-gated blocks
+	// rather than an early `return` followed by the rest: a `return` here is needless on the
+	// non-Linux path (clippy's `needless_return`, which the Windows build flagged) and, more
+	// importantly, the two are mutually exclusive alternatives rather than a guard and a body.
 	#[cfg(not(target_os = "linux"))]
 	{
 		// Windows and macOS are not wired to the watcher yet; their bundles also set no
 		// arguments, so handing over to a binary that does not exist there would replace the
 		// working app with a failure.
-		return false;
+		false
 	}
 
 	#[cfg(target_os = "linux")]

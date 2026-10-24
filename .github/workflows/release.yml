@@ -201,6 +201,28 @@ jobs:
         # `game_process.rs` and `control.rs` compile on Windows from day one.
         run: python tools/build_watcher.py
 
+      # The three steps below are the only place any of this code is compiled by MSVC. Everything
+      # platform-specific in `src-tauri/src/platform/windows.rs` — 358 lines of Win32 window
+      # enumeration — is `#[cfg(windows)]`, so the Linux `verify` job cannot see it, and it had
+      # never been compiled before these steps existed. They run *after* the sidecar and watcher
+      # are built because `tauri.conf.json`'s `externalBin` entries are resolved by the build
+      # script, which fails outright without them.
+      #
+      # `clippy` before `test`: a platform-specific `dead_code` or a `needless_return` on the
+      # non-Linux branch is invisible on Linux and noisy here, and both were found this way rather
+      # than on a user's machine. `-D warnings` makes that a failure instead of a scrollback line.
+      - name: Lint the shell for this platform
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run the shell test suite on Windows
+        # Runs only the tests that compile for Windows. The `#[cfg(target_os = "linux")]` modules
+        # (overlay stacking, the portal) are compiled out, so the count here is lower than the
+        # Linux job's — that difference is the point, not a discrepancy to fix.
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run the watcher test suite on Windows
+        run: cargo test --manifest-path src-tauri/watcher-bin/Cargo.toml
+
       - name: Build
         # `nsis` rather than the default `msi`: NSIS produces a single self-contained .exe
         # installer that can be run by any user without an elevated installer service, which is

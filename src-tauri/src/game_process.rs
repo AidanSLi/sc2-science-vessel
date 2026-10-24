@@ -51,6 +51,14 @@
 /// `Play Main Threa` — the name of a thread the game renamed, not the executable at all. Neither
 /// of those would ever have matched `starcraft ii`, so the watcher could not see the game it was
 /// built for, which showed up as an autostart launch that stayed silent forever.
+///
+/// `cfg(target_os = "linux")` because the matching below exists for Linux's `/proc` view of a
+/// Wine process. Windows will need its own implementation (`CreateToolhelp32Snapshot` or a WMI
+/// query) when the watcher is ported there, and until then this whole cluster would be dead code
+/// on that platform — which is a `dead_code` warning under `-D warnings`, and was how this was
+/// found rather than on a user's machine. The tests are gated with it because they exercise the
+/// matching directly rather than through `game_is_running`.
+#[cfg(target_os = "linux")]
 const GAME_PROCESS_NAMES: [&str; 4] = ["starcraft ii", "starcraft 2", "sc2_x64", "sc2"];
 
 /// Substrings that identify the game when the executable name is useless.
@@ -59,6 +67,7 @@ const GAME_PROCESS_NAMES: [&str; 4] = ["starcraft ii", "starcraft 2", "sc2_x64",
 /// match above is not sufficient on its own. The **command line** survives intact — Wine passes
 /// the Windows path through — so it is consulted as a second signal. These are the fragments
 /// that appear in the game's own path but not in Battle.net's, the editor's, or a launcher's.
+#[cfg(target_os = "linux")]
 const GAME_COMMAND_FRAGMENTS: [&str; 2] = ["sc2_x64.exe", "sc2.exe"];
 
 /// Substrings that disqualify a command line even when it names the game.
@@ -66,12 +75,14 @@ const GAME_COMMAND_FRAGMENTS: [&str; 2] = ["sc2_x64.exe", "sc2.exe"];
 /// The editor and the launcher share the game's directory, so their command lines contain
 /// `StarCraft II` too. Editor and launcher are excluded here for the same reason they are
 /// excluded by name.
+#[cfg(target_os = "linux")]
 const DISQUALIFYING_COMMAND_FRAGMENTS: [&str; 2] = ["editor.exe", "launcher.exe"];
 
 /// Name fragments that disqualify a process even when it also matches a game name.
 ///
 /// The editor ships in the same directory and shares the game's name prefix, so it would
 /// otherwise be indistinguishable by name alone.
+#[cfg(target_os = "linux")]
 const DISQUALIFYING_FRAGMENTS: [&str; 2] = ["editor", "launcher"];
 
 /// The maximum length of the kernel's `comm` field, in bytes.
@@ -80,6 +91,7 @@ const DISQUALIFYING_FRAGMENTS: [&str; 2] = ["editor", "launcher"];
 /// truncated and the tail is simply gone. That is not a Wine quirk to work around; it is how
 /// `/proc/<pid>/comm` has always behaved, and it is why comparison cannot be equality against a
 /// full filename.
+#[cfg(target_os = "linux")]
 const COMM_MAX_BYTES: usize = 15;
 
 /// Truncates a name the way the kernel does when filling `comm`.
@@ -90,6 +102,7 @@ const COMM_MAX_BYTES: usize = 15;
 ///
 /// @param name A process name.
 /// @returns The prefix the kernel would report.
+#[cfg(target_os = "linux")]
 fn kernel_comm(name: &str) -> &str {
 	if name.len() <= COMM_MAX_BYTES {
 		return name;
@@ -108,6 +121,7 @@ fn kernel_comm(name: &str) -> &str {
 ///
 /// @param name A process name as reported by the operating system.
 /// @returns A comparable stem, e.g. `starcraft ii`.
+#[cfg(target_os = "linux")]
 fn normalise_process_name(name: &str) -> String {
 	let lowered = name.trim().to_ascii_lowercase();
 	let stem = lowered.strip_suffix(".exe").unwrap_or(&lowered);
@@ -123,6 +137,7 @@ fn normalise_process_name(name: &str) -> String {
 /// @param name A process name as reported by the operating system.
 /// @returns `true` when the process is the game rather than the editor, launcher or anything
 ///   else.
+#[cfg(target_os = "linux")]
 pub fn is_game_process_name(name: &str) -> bool {
 	let normalised = normalise_process_name(name);
 	if normalised.is_empty() {
@@ -158,6 +173,7 @@ pub fn is_game_process_name(name: &str) -> bool {
 ///
 /// @param command_line The process's arguments joined by spaces.
 /// @returns `true` when the command line names the game rather than the editor or a launcher.
+#[cfg(target_os = "linux")]
 pub fn is_game_command_line(command_line: &str) -> bool {
 	let lowered = command_line.to_ascii_lowercase();
 	if lowered.is_empty() {
@@ -225,7 +241,7 @@ pub fn game_is_running() -> bool {
 	}
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
 	use super::*;
 

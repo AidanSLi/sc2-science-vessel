@@ -148,13 +148,6 @@ pub fn request_show_of_running_instance() -> bool {
 	control::send_to(CONTROL_NAME, "show")
 }
 
-/// Asks an already-running watcher to shut down, for an explicit quit.
-///
-/// @returns `true` when a running watcher acknowledged the request.
-pub fn request_quit_of_running_instance() -> bool {
-	control::send_to(CONTROL_NAME, "quit")
-}
-
 /// Set when a client asked for the GUI, consumed by the polling loop.
 ///
 /// A flag rather than a direct call into the loop because the listener runs on its own thread: it

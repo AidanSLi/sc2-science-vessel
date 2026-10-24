@@ -679,12 +679,34 @@ and there is no extra multiplier to apply.
   Windows with `` `.../icons/icon.ico` not found; required for generating a Windows Resource
   file``. `pnpm tauri icon src-tauri/icons/icon.png` regenerates the whole platform set; keep
   `icon.ico` and `icon.icns` listed in `tauri.conf.json`'s `bundle.icon`.
-- **Rehearse a Windows-only compile error without a Windows toolchain**: a tiny scratch crate
-  containing just the offending module plus its dependency can be `cargo check --target
-  x86_64-pc-windows-msvc`'d on Linux. `notify-rust` and the `windows` crate need no MSVC linker
-  to *type-check*; only `ring` does, and it is the one thing that stops the full app from being
-  cross-checked. This caught nothing here that CI had not, but it turns a 20-minute CI round trip
-  into a 5-second local one.
+- **The whole Windows build compiles and its unit tests run on Linux**, so do not reason about a
+  Windows-only change from the Linux build alone — and do not wait for CI to find a compile error
+  that takes five seconds to reproduce locally. `cargo install cargo-xwin` (0.23.1 here) then:
+  ```
+  cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+  cargo xwin test   --target x86_64-pc-windows-msvc --no-run
+  wine target/x86_64-pc-windows-msvc/debug/deps/sc2_science_vessel_lib-*.exe
+  ```
+  Run it from `src-tauri/` and again from `src-tauri/watcher-bin/`. Two prerequisites: empty
+  placeholder files at `src-tauri/sc2sv-sidecar-x86_64-pc-windows-msvc.exe` and
+  `src-tauri/sc2sv-watch-x86_64-pc-windows-msvc.exe` (both gitignored — `externalBin` is resolved
+  by the build script and fails without them), and patience on the first run, which fetches the
+  MSVC headers. Counts on the reference machine: 44 shell + 14 watcher tests under wine, against
+  56 + 27 on Linux — the difference is the `#[cfg(target_os = "linux")]` modules, not a failure.
+  This is a compile-and-unit-test check only; nothing here exercises a real Win32 window.
+- **`-- -D warnings` is what makes that check worth running.** Two Windows-only defects were
+  invisible on Linux and surfaced immediately: a `needless_return` in `hand_over_to_the_watcher`'s
+  `#[cfg(not(target_os = "linux"))]` block, and `notify::POPUP_LIFETIME` being dead there because
+  only the xdg backend can close a toast. The fix for the second was `cfg(all(unix, not(target_os
+  = "macos")))` on the constant *and* its `use std::time::Duration`, not an `#[allow]`: if a value
+  has no reader on a platform, say so in the type system so the next reader knows it is
+  intentional. The `windows` CI job runs clippy with `-D warnings` before the build for exactly
+  this reason.
+- **A `#[cfg]`-gated cluster that is only tested on one platform needs its tests gated too.**
+  `game_process`'s process-name matching is all Linux (`/proc` and Wine `comm` trivia), and its
+  tests call those functions directly, so they are `#[cfg(all(test, target_os = "linux"))]`. Gate
+  the tests with the code, or the Windows build fails on unresolved names rather than reporting a
+  clean "0 tests".
 - The app is called **SC2 Science Vessel** (`productName`, the window title, and
   `notify::POPUP_TITLE`), while the binary, the `.deb` package name, and the D-Bus/desktop
   identity stay `sc2-science-vessel`. Both spellings are load-bearing: KWin matches `WM_CLASS`

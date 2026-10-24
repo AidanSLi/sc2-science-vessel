@@ -252,10 +252,26 @@ All three are needed. On the X11 backend through XWayland all three work, which 
 
 These are recorded rather than papered over.
 
-- **Windows is written but not verified on hardware.** No Windows machine was available, and no
-  Windows target can even be linked here (no MSVC toolchain; `ring` fails its build script). The
-  API semantics come from Microsoft's documentation. Treat the first Windows run as the
-  verification step. See `src-tauri/src/platform/windows.rs`.
+- **Windows is compiled and tested in CI, but not verified on hardware.** The distinction
+  matters. The `windows` job in `.github/workflows/release.yml` now runs `cargo clippy -D
+  warnings`, `cargo test` and the watcher's tests under MSVC on `windows-latest` before building,
+  so `src-tauri/src/platform/windows.rs` and every `#[cfg(windows)]` branch are compiled and its
+  unit tests actually execute. What is still unverified is *behaviour*: the Win32 API semantics
+  come from Microsoft's documentation, and no one has yet watched this app enumerate a real SC2
+  window, `SetWindowPos` the overlay over a real game, or run on WebView2 at all. Treat the first
+  Windows run as the behavioural verification step.
+
+  Two consequences worth knowing. First, the Linux `verify` job cannot substitute for this: every
+  platform-specific module is `#[cfg]`-gated out on Linux, so a Windows-only compile error is
+  invisible there — two were found the moment a Windows build was attempted (`needless_return` in
+  `main.rs`, dead `notify::POPUP_LIFETIME`). Second, a Windows build can be *attempted* on Linux
+  without a VM: `cargo install cargo-xwin` plus `cargo xwin test --target
+  x86_64-pc-windows-msvc` compiles against the real MSVC headers via `xwin`, and the resulting
+  `.exe` runs under `wine` — which is how the 44 shell tests and 14 watcher tests were confirmed
+  passing here. It needs empty placeholder files at `src-tauri/sc2sv-sidecar-x86_64-pc-windows-msvc.exe`
+  and `src-tauri/sc2sv-watch-x86_64-pc-windows-msvc.exe` (both gitignored) because `externalBin`
+  is resolved by the build script. This is a compile-and-unit-test check, not a substitute for
+  running the app.
 - **An *active* fullscreen game cannot be covered by an ordinary window on KDE Wayland.** KWin's
   `Window::belongsToLayer` checks `isActiveFullScreen()` *before* `keepAbove()`, so a focused
   fullscreen client sits on `ActiveLayer`, above every layer an always-on-top toplevel can reach.

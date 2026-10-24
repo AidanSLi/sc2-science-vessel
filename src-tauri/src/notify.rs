@@ -63,6 +63,8 @@
 //! So on Windows the popup is best-effort in the same sense the overlay is: it is written to the
 //! documented API, and the first run on real hardware is where the behaviour gets confirmed.
 
+// Only the popup's timeout needs a `Duration`, and only where it can be closed by hand.
+#[cfg(all(unix, not(target_os = "macos")))]
 use std::time::Duration;
 
 /// How long the popup stays on screen before it is closed.
@@ -70,6 +72,13 @@ use std::time::Duration;
 /// Long enough to read eight or so words after a loading screen, short enough that it is gone
 /// before the player is likely to be looking at that corner of the map. The player can also
 /// dismiss it early: it is a real notification, so it has Plasma's own close button.
+///
+/// Used only where [`show_game_start_popup`] can close the popup itself, which is the xdg
+/// backend. On Windows the toast's lifetime is the system's to decide — there is no
+/// `NotificationHandle::close` to call — so this constant has no reader there. The `cfg` keeps
+/// that from being a `dead_code` warning, which would otherwise make the Windows build noisy
+/// about a value that is correct on the platform it applies to.
+#[cfg(all(unix, not(target_os = "macos")))]
 pub const POPUP_LIFETIME: Duration = Duration::from_secs(8);
 
 /// The notification's title, which the user specified as the app name.
