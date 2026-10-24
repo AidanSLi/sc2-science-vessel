@@ -4,8 +4,14 @@
 		first painted frame is already the right palette. A theme applied after hydration would
 		flash the default surface for a frame on every launch; the root layout then overwrites this
 		attribute with the stored choice (see `src/lib/theme.ts`).
+
+		`data-motion="off"` is the same idea for a much more expensive attribute. It gates the
+		Space theme's ambient animations, and only Windows turns it on (ADR 0021: on this app's
+		Linux renderer an animation costs a full CPU core). Defaulting to off means a first frame
+		that is cheap on every platform, and the failure mode of the shell never answering is a
+		static background rather than a laggy app.
 	-->
-<html lang="en" class="h-full" data-theme="terran">
+<html lang="en" class="h-full" data-theme="terran" data-motion="off">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />

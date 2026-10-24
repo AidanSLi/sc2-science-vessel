@@ -303,23 +303,22 @@ html.is-transparent-window {
  * Deliberately low-contrast: this sits behind tables of replay data that people read for minutes at
  * a time, so it must never compete with the content.
  *
- * ## The field is static, and that is a performance decision, not an aesthetic one
+ * ## The field only moves where motion is affordable
  *
- * This background used to drift and breathe. Under the software compositor this app is forced
- * onto (ADR 0005), animating it cost **100% of a core** — measured on the release build in its
- * steady state, against **4%** with every animation removed. The cost is per *composite*, not per
- * painted pixel: six 4x4px twinkling dots at 60fps also measured 100%, while the same full-window
- * layers stepped to one repaint per 15s measured 5.8%. Under a software renderer every frame
- * repaints the whole window on the CPU, so any continuously animating element saturates a core
- * whatever its size.
+ * The background drifts and breathes on Windows and stands still on Linux, and the reason is a
+ * measurement rather than a taste. Under the software compositor the Linux build is forced onto
+ * (ADR 0005, ADR 0022) animating this cost **100% of a core** — release build, steady state —
+ * against **4%** with every animation removed. The cost is per *composite*, not per painted pixel:
+ * six 4x4px twinkling dots at 60fps also measured 100%, while these full-window layers stepped to
+ * one repaint per 15s measured 5.8%. A software compositor repaints the whole window on the CPU
+ * every frame, so any continuously animating element saturates a core whatever its size.
  *
- * That also explains why the lag was theme-specific: ADR 0019's `nudgeRepaint` forces a
- * full-window composite on every pointer event, which is cheap with a static page and ruinous
- * when each composite is this expensive.
+ * It also explains why the lag was theme-specific: ADR 0019's `nudgeRepaint` forces a full-window
+ * composite on every pointer event, which is cheap against a static page and ruinous when each
+ * composite costs this much.
  *
- * Do not reintroduce motion here without measuring it, and see
- * docs/adr/0021-the-space-field-is-static.md for the numbers and for what would make animation
- * affordable again (a working GPU compositor).
+ * So the animations below are gated on `html[data-motion='on']`, which only Windows sets. See the
+ * block further down, and docs/adr/0021-the-space-field-is-static.md.
  */
 /*
  * `fixed`, not `absolute`. `.app-surface` is itself `position: fixed` and is the page's scroll
@@ -373,11 +372,99 @@ html.is-transparent-window {
 		radial-gradient(55% 40% at 82% 30%, color-mix(in oklab, var(--color-accent) 22%, transparent), transparent 72%),
 		radial-gradient(70% 50% at 55% 95%, color-mix(in oklab, var(--color-accent-2) 18%, transparent), transparent 75%);
 	/*
-	 * The blur is kept even though nothing animates any more. It is what turns three plain radial
-	 * gradients into soft nebulae, and a *static* blurred layer is rasterised once and then left
-	 * alone — the cost only mattered when it was re-rasterised every frame.
+	 * The blur is what turns three plain radial gradients into soft nebulae. Kept on every
+	 * platform: a *static* blurred layer is rasterised once and then left alone, so it costs
+	 * nothing until something animates it.
 	 */
 	filter: blur(40px);
+}
+
+/*
+ * ## Ambient motion, but only where it is affordable
+ *
+ * The sky was static for everyone at first, because on this app's Linux renderer any animation
+ * costs a full CPU core (ADR 0021). That is a *platform* limitation, not a property of the
+ * effect: it comes from WebKitGTK sitting on the software compositor (ADR 0005, ADR 0022),
+ * while Windows runs WebView2 over Chromium's compositor, where a transform or opacity animation
+ * is a GPU layer.
+ *
+ * So the motion is gated on `html[data-motion='on']`, which the shell's
+ * `animations_supported_command` sets (`true` on Windows, `false` on Linux). Every rule below is
+ * opt-in, which means the failure mode of a missing or unrecognised attribute is a static — and
+ * therefore cheap — background rather than a laggy app. `app.html` ships `data-motion="off"` for
+ * the same reason: the first painted frame must never be the expensive one.
+ *
+ * Do not move these declarations up into `.theme-sky`/`.theme-nebulae` unguarded. On Linux the
+ * measurement is 100% of a core against 4% (ADR 0021), and it is a per-composite cost: six 4x4px
+ * dots animating at 60fps cost the same as the two full-window layers here.
+ */
+/*
+ * Each layer drifts by **exactly one tile of its own background**, which is what makes the loop
+ * seamless: the field is a repeating pattern, so shifting it by one tile lands it back on itself
+ * and the restart is invisible. Shifting by any other distance snaps visibly every cycle.
+ *
+ * The tile sizes are the `background-size` values on the base rules above — 220x200 for the dense
+ * speck layer, 420x380 for the sparse bright one — so these two numbers and those must stay in
+ * step. That is also why the distances are in `px` and not `%`: a percentage resolves against the
+ * layer's own height, which changes with the window, and would silently stop being a tile.
+ */
+html[data-motion='on'] .theme-sky::before {
+	animation: theme-sky-drift-dense 240s linear infinite;
+}
+
+html[data-motion='on'] .theme-sky::after {
+	animation: theme-sky-drift-sparse 520s linear infinite reverse;
+}
+
+html[data-motion='on'] .theme-nebulae {
+	animation: theme-nebula-breathe 90s ease-in-out infinite alternate;
+}
+
+/*
+ * The drift moves the layer *down*, so it needs material above the viewport to slide into place.
+ * One full viewport of overhang is enough for either tile on any window this app can open (the
+ * smallest mode is 600px tall against a 380px shift). Only the animated case needs the overhang:
+ * a static field would just rasterise it and throw it away, so it is set here rather than on the
+ * base rule.
+ */
+html[data-motion='on'] .theme-sky::before,
+html[data-motion='on'] .theme-sky::after {
+	inset: -100% 0 0 0;
+}
+
+@keyframes theme-sky-drift-dense {
+	from {
+		transform: translate3d(0, 0, 0);
+	}
+	to {
+		transform: translate3d(0, 200px, 0);
+	}
+}
+
+@keyframes theme-sky-drift-sparse {
+	from {
+		transform: translate3d(0, 0, 0);
+	}
+	to {
+		transform: translate3d(0, 380px, 0);
+	}
+}
+
+/*
+ * Opacity and `transform` only, never layout-affecting properties. On Chromium's compositor those
+ * two are the pair that stays on the GPU; animating `width`, `background-position` or `filter`
+ * would demote the layer and hand the cost back. `transform: scale()` rather than the standalone
+ * `scale` property for the same reason — it is the form every compositor recognises.
+ */
+@keyframes theme-nebula-breathe {
+	from {
+		opacity: 0.55;
+		transform: scale(1);
+	}
+	to {
+		opacity: 0.85;
+		transform: scale(1.08);
+	}
 }
 
 

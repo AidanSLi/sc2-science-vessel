@@ -208,6 +208,25 @@ fn overlay_supported_command() -> bool {
     platform::overlay_supported()
 }
 
+/// Reports whether animating the ambient background would be cheap on this machine.
+///
+/// Exists because the same CSS costs nothing on one platform and a whole CPU core on another.
+/// Linux runs WebKitGTK, which this app is forced onto a *software* compositor
+/// (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, ADR 0005 — the NVIDIA driver refuses the buffer WebKit
+/// asks for, ADR 0022). Under it a continuously animating element costs 100% of a core whatever
+/// its size, because every frame repaints the whole window on the CPU (ADR 0021). Windows runs
+/// WebView2 over Chromium's compositor, where transform and opacity animations run on the GPU.
+///
+/// The frontend asks rather than guessing from `navigator.userAgent`, so the rule lives next to
+/// the platform code it depends on and can be changed in one place when a Linux machine with a
+/// working GPU path is supported.
+///
+/// @returns `true` when the ambient background may animate.
+#[tauri::command]
+fn animations_supported_command() -> bool {
+    cfg!(windows)
+}
+
 /// Decides whether the hotkey should *hide* rather than reveal, from what the player can see.
 ///
 /// The hotkey is a toggle, and the honest question it asks is "is the app in front of me?" —
@@ -1326,6 +1345,7 @@ pub fn run() {
             set_window_mode_command,
             reveal_window_mode_command,
             overlay_supported_command,
+            animations_supported_command,
             get_settings,
             get_theme,
             set_theme,

@@ -16,7 +16,15 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { applyTheme, DEFAULT_THEME, onThemeChange, parseTheme, themeHasSky, THEMES } from './theme';
+import {
+	applyTheme,
+	DEFAULT_THEME,
+	initAnimations,
+	onThemeChange,
+	parseTheme,
+	themeHasSky,
+	THEMES
+} from './theme';
 
 describe('parseTheme', () => {
 	it('accepts every offered theme', () => {
@@ -110,6 +118,24 @@ describe('applyTheme', () => {
 		applyTheme('terran');
 
 		expect(count).toBe(1);
+	});
+
+	it('writes the motion capability alongside the theme', () => {
+		// These two attributes are set in one place on purpose: a theme applied without a matching
+		// `data-motion` is the bug this shape prevents — a static Space background on a platform
+		// that could animate it, or an animating one on a platform where that costs a CPU core
+		// (ADR 0021). Outside the desktop shell the answer is the safe one, so a developer
+		// running `pnpm dev` on Linux sees the shipping behaviour.
+		const { attributes } = stubDocument();
+		applyTheme('space');
+		expect(attributes.motion).toBe('off');
+	});
+
+	it('defaults motion off and reports it', async () => {
+		// The whole point of the flag is that the *first* themed frame is never the expensive one,
+		// so an unanswered query must leave animation disabled rather than enabled.
+		stubDocument();
+		await expect(initAnimations()).resolves.toBe(false);
 	});
 
 	it('treats the event payload as untrusted', () => {

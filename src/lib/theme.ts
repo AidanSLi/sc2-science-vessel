@@ -79,6 +79,35 @@ export function themeHasSky(theme: ThemeId): boolean {
 }
 
 /**
+ * Whether this platform can animate the ambient background without burning a CPU core.
+ *
+ * The answer is a *platform* fact, not a CSS one, which is why the shell reports it rather than
+ * the stylesheet deciding. Linux runs WebKitGTK on the software compositor this app is forced
+ * onto (ADR 0005, ADR 0022), where a continuously animating element measures 100% of a core
+ * whatever its size — six 4x4px dots cost the same as two full-window gradient layers — because
+ * every frame repaints the whole window on the CPU (ADR 0021). Windows runs WebView2 over
+ * Chromium's compositor, where a transform or opacity animation is a GPU layer and costs
+ * approximately nothing.
+ *
+ * Read once from the shell and cached, because it is asked on every theme change and never
+ * changes within a process. Outside the desktop shell — the frontend is also served in a plain
+ * browser during development — the answer is the safe one, so a developer on Linux sees the
+ * shipping behaviour rather than a locals-only animation.
+ *
+ * @returns True when the theme's ambient layers may animate.
+ */
+export async function animationsSupported(): Promise<boolean> {
+	if (!isTauri()) return false;
+	try {
+		const { invoke } = await import('@tauri-apps/api/core');
+		return await invoke<boolean>('animations_supported_command');
+	} catch {
+		// A shell too old to answer predates the command, and every such build is a Linux one.
+		return false;
+	}
+}
+
+/**
  * Applies a theme to the document by setting `data-theme` on `<html>`.
  *
  * Also mirrors the theme's darkest surface into the webview's own background colour, so the
@@ -90,13 +119,54 @@ export function themeHasSky(theme: ThemeId): boolean {
  */
 export function applyTheme(theme: ThemeId): void {
 	if (typeof document === 'undefined') return;
-	if (document.documentElement.dataset.theme === theme) return;
-	document.documentElement.dataset.theme = theme;
+	applyMotionedTheme(document.documentElement, theme);
+}
+
+/**
+ * Whether the ambient motion has been confirmed to be affordable on this machine.
+ *
+ * Set once by `initAnimations` and read by `applyTheme`. Deliberately a module-level flag rather
+ * than an event listener on every caller: `data-motion` has to be correct for the *first* themed
+ * frame, and a second async reader per call site would reintroduce the flash that writing the
+ * default theme into `app.html` exists to avoid.
+ */
+let motionEnabled = false;
+
+/**
+ * Asks the shell whether animation is affordable and records the answer for `applyTheme`.
+ *
+ * Must be awaited before the first `applyTheme` call, which `initTheme` does.
+ *
+ * @returns True when ambient animation is enabled.
+ */
+export async function initAnimations(): Promise<boolean> {
+	motionEnabled = await animationsSupported();
+	return motionEnabled;
+}
+
+/**
+ * Writes the theme and the motion capability onto a root element.
+ *
+ * Split out from `applyTheme` so the two attributes are set together and in one place: a theme
+ * applied without the matching `data-motion` is the bug this shape prevents — it would show a
+ * static Space background on a platform that could animate it, or an animating one on a platform
+ * that cannot afford it.
+ *
+ * @param root The document element.
+ * @param theme The theme to apply.
+ */
+function applyMotionedTheme(root: HTMLElement, theme: ThemeId): void {
+	if (root.dataset.theme === theme && root.dataset.motion) return;
+	root.dataset.theme = theme;
+	// `data-motion` gates the CSS animations. Written as `on`/`off` rather than added and removed
+	// because the attribute ends up in selectors either way, and this cannot leave a stale value
+	// behind from a previous theme.
+	root.dataset.motion = motionEnabled ? 'on' : 'off';
 	// Components that render theme-dependent *markup* — the root layout decides whether to mount
 	// the ambient sky layers — cannot see a custom-property change, because nothing about them
 	// re-renders. The attribute alone is enough for CSS, but not for the DOM, so the change is
-	// also announced. Guarded by the equality check above so re-applying the same theme (which
-	// `initTheme` does on every mount) does not fire a redundant event.
+	// also announced. Guarded by the check above so re-applying the same theme (which `initTheme`
+	// does on every mount) does not fire a redundant event.
 	document.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: theme }));
 }
 
@@ -127,6 +197,9 @@ export function onThemeChange(listener: (theme: ThemeId) => void): () => void {
  * @returns The theme that was applied.
  */
 export async function initTheme(): Promise<ThemeId> {
+	// Before the palette, because `applyTheme` writes `data-motion` alongside `data-theme` and the
+	// CSS decides whether to animate from it. Awaiting here keeps the first themed frame correct.
+	await initAnimations();
 	let theme: ThemeId = DEFAULT_THEME;
 	if (isTauri()) {
 		try {

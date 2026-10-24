@@ -1,6 +1,6 @@
-# 21. The Space field is static, because a software-rendered animation costs a core
+# 21. The Space field is static on Linux, because a software-rendered animation costs a core
 
-**Status:** accepted
+**Status:** accepted — **superseded in part by [0023](0023-motion-is-gated-on-the-platform.md)**: the field still stands still on Linux, but it animates on Windows, which runs a different renderer. Everything below about the Linux measurement and the ruled-out list remains correct, and is what the gate is based on.
 
 **Date:** 2026-10-19
 

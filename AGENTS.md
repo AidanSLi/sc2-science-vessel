@@ -602,15 +602,24 @@ and there is no extra multiplier to apply.
   and `--color-race-*` are constant across themes: green means "ahead of the build" in
   every race's console, so theming it would change what the guide's main signal means per
   skin. See ADR 0020.
-- **Nothing in a theme animates.** Under the software compositor this app is forced onto
-  (ADR 0005), a *continuously* animating element costs **100% of a core** whatever its size —
-  six 4x4px dots at 60fps measured the same as two full-window gradient layers. The cost is per
-  *composite*, not per painted pixel, because the software path repaints the whole window on
-  every frame. The Space field is therefore static (ADR 0021). Two measurement rules that cost
-  hours and must not be repeated: measure the **`WebKitWebProcess` child**, not the app process
-  (the page renders in the child, so the parent shows ~1% either way), and measure in **steady
-  state** — the first ~20 s after launch is page load, and reading at 10 s gave 35.7% for a build
-  that measures 3.4% at 30 s.
+- **Nothing animates on Linux; the Space theme animates on Windows only.** Under the software
+  compositor this app is forced onto (ADR 0005), a *continuously* animating element costs **100%
+  of a core** whatever its size — six 4x4px dots at 60fps measured the same as two full-window
+  gradient layers. The cost is per *composite*, not per painted pixel, because the software path
+  repaints the whole window on every frame (ADR 0021). Windows runs WebView2 over Chromium's
+  compositor, where a `transform`/`opacity` animation is a GPU layer, so the ambient animations
+  live behind `html[data-motion='on']` — set only by `animations_supported_command`
+  (`cfg!(windows)`) and answered once at startup before the first theme is applied (ADR 0023).
+  Three rules follow: **never move an animation out of its `[data-motion]` gate**; `app.html`
+  must keep `data-motion="off"` in the markup so the first frame is never the expensive one; and
+  a CSS animation may only touch `transform`/`opacity`, because anything else (layout, `filter`,
+  `background-position`) demotes the layer and hands the cost back even on the GPU path. Drift
+  keyframes must translate by a whole multiple of the layer's own `background-size`, or the loop
+  snaps visibly — it was `50%` of the layer height until ADR 0023.
+- **Two measurement rules that cost hours and must not be repeated:** measure the
+  **`WebKitWebProcess` child**, not the app process (the page renders in the child, so the parent
+  shows ~1% either way), and measure in **steady state** — the first ~20 s after launch is page
+  load, and reading at 10 s gave 35.7% for a build that measures 3.4% at 30 s.
 - **`Failed to create GBM buffer ... Invalid argument` is the NVIDIA driver, not a WebKit bug to
   wait out.** WebKit allocates a buffer with a DRM format modifier *and*
   `GBM_BO_USE_RENDERING`; the NVIDIA driver returns `EINVAL` for that pair and accepts either
