@@ -611,6 +611,15 @@ and there is no extra multiplier to apply.
   (the page renders in the child, so the parent shows ~1% either way), and measure in **steady
   state** — the first ~20 s after launch is page load, and reading at 10 s gave 35.7% for a build
   that measures 3.4% at 30 s.
+- **`Failed to create GBM buffer ... Invalid argument` is the NVIDIA driver, not a WebKit bug to
+  wait out.** WebKit allocates a buffer with a DRM format modifier *and*
+  `GBM_BO_USE_RENDERING`; the NVIDIA driver returns `EINVAL` for that pair and accepts either
+  alone (verified by calling `gbm_bo_create_with_modifiers2` directly on driver 615.78.08). tauri
+  closed the report as not planned. So the software compositor is not going away by upgrading
+  WebKitGTK, and any plan to make animation cheap has to start with *selecting* a renderer per
+  machine — try the real call against each render node — rather than assuming one. Forcing an EGL
+  vendor at start-up does make it work here (101% → 10.2% on the animated theme) but hard-codes a
+  Mesa-only stack, so it is not a default. See ADR 0022.
 - **The window is frameless in both modes and the title bar is page markup**
   (`src/lib/components/TitleBar.svelte`), because a toolkit headerbar follows the desktop's
   theme and cannot follow ours. Two consequences are easy to break: a drag region's resize

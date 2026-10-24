@@ -86,6 +86,12 @@ rule stays for the rest of the app.
 - The real exit is a working GPU compositor. `WEBKIT_DISABLE_DMABUF_RENDERER=1` is mandatory today
   (ADR 0005): the DMABUF path fails with `Failed to create GBM buffer of size 1280x820: Invalid
   argument` and renders nothing at all. On a GPU-composited path, transform and opacity
-  animations are the cheap case, and the numbers above would not apply. Two other workarounds in
-  this codebase exist only because of that fallback — ADR 0019's `nudgeRepaint` and the styled
-  scrollbar from ADR 0017 — so fixing the renderer may make all three unnecessary at once.
+  animations are the cheap case, and the numbers above would not apply: measured through Mesa's
+  EGL vendor on the same machine, the **animated** field costs 10.2% of a core instead of 101%.
+  Two other workarounds in this codebase exist only because of that fallback — ADR 0019's
+  `nudgeRepaint` and the styled scrollbar from ADR 0017 — so fixing the renderer may make all
+  three unnecessary at once.
+- That exit is not a WebKitGTK upgrade. **ADR 0022** shows the failure is the NVIDIA driver
+  refusing a format modifier together with `GBM_BO_USE_RENDERING`, which it has refused for
+  years and which tauri has closed as not planned. Making animation affordable means choosing a
+  renderer per machine, and that is a separate piece of work.

@@ -90,6 +90,13 @@ Under X11 the window opens but nothing is presented, while stderr repeats
 saying so. `WEBKIT_DISABLE_DMABUF_RENDERER=0` restores it deliberately if your drivers
 handle it. See `docs/adr/0005-disable-webkitgtk-dmabuf-renderer.md`.
 
+On NVIDIA hardware the last error is not a WebKit bug to wait out: WebKit needs a DRM format
+modifier *and* `GBM_BO_USE_RENDERING` on one buffer, and the NVIDIA driver refuses that
+combination (`EINVAL`) while accepting either alone. Verified on driver 615.78.08 by calling
+`gbm_bo_create_with_modifiers2` directly; the same app on the same machine draws fine through
+Mesa. The software compositor costs a full core per animated element, which is why the Space
+theme's background is static. See `docs/adr/0022-the-nvidia-driver-rejects-webkit-s-gbm-buffers.md`.
+
 ### The overlay over a fullscreen game (KDE Plasma Wayland)
 
 The overlay sits above the game and follows it while the game is a normal window. It cannot do
