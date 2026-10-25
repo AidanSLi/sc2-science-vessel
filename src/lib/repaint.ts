@@ -55,6 +55,39 @@ export function clearRepaintNudge(): void {
 }
 
 /**
+ * Repairs a repaint that a `:hover` (or `:focus`) restyle is about to cause.
+ *
+ * `nudgeRepaint` inside a pointer listener is too EARLY for hover. The listener runs on the event
+ * that moves the pointer, but the style change it triggers (`:hover` matching the element now under
+ * the cursor) is applied in the frame *after* the event is dispatched. So the sequence on a real
+ * window is: pointermove → our nudge composites the whole layer → WebKit applies the hover style,
+ * invalidates only the button's rectangle, discards the backing store → the window is left showing
+ * nothing but that button.
+ *
+ * Measured on the analysis window with the buttons in the OLD layout: coverage fell from 100% to
+ * 0.1% on every hover-in, recovering only when something else forced a composite. The same
+ * measurement through the restructured layout came out 100% on every trial, so the collapse is not
+ * happening any more — but the ordering hazard is real and this is what removes it rather than
+ * relying on an unrelated layout detail to keep it away.
+ *
+ * Deferring to the next animation frame puts the repair after the hover style has been applied:
+ * `requestAnimationFrame` callbacks run after style recalc and layout for that frame, so the forced
+ * composite includes the restyled button and the discarded store is replaced in the same frame the
+ * damage happened in. The second nudge, one frame later, covers the case where WebKit applies the
+ * hover paint in the frame after the style change.
+ *
+ * Alternating values are preserved because `nudgeRepaint` owns the toggle, so two calls in a row are
+ * two real changes — which is what makes WebKit composite rather than short-circuit.
+ */
+function nudgeAfterHoverRepaint(): void {
+	if (typeof document === 'undefined' || typeof requestAnimationFrame !== 'function') return;
+	requestAnimationFrame(() => {
+		nudgeRepaint();
+		requestAnimationFrame(nudgeRepaint);
+	});
+}
+
+/**
  * Calls `nudgeRepaint` after every layout change that WebKit should have repainted.
  *
  * A `ResizeObserver` on the document element covers the case the user actually reported on the
@@ -116,6 +149,24 @@ export function observeRepaints(win: Window = window): () => void {
 		// stops propagation cannot hide the damage from this repair.
 		win.addEventListener(type, onInput, { passive: true, capture: true });
 		teardown.push(() => win.removeEventListener(type, onInput, { capture: true }));
+	}
+
+	// Hover and focus changes need the deferred repair, not the immediate one above: those style
+	// changes are applied in the frame after the event, so an immediate nudge lands first and the
+	// damage wins. `pointerover`/`pointerout` are the events that actually fire when the hovered
+	// element changes (a `pointermove` within one element fires neither); `focusin`/`focusout` cover
+	// the same hazard for a keyboard user tabbing onto a control, which restyles it just the same.
+	//
+	// Both immediate AND deferred, deliberately: the immediate one keeps the pointermove behaviour
+	// that is already known to work for selection and scrolling, and the deferred one is what the
+	// hover restyle needs. Firing both costs two style assignments.
+	for (const type of ['pointerover', 'pointerout', 'focusin', 'focusout']) {
+		const onRestyle = () => {
+			nudgeRepaint();
+			nudgeAfterHoverRepaint();
+		};
+		win.addEventListener(type, onRestyle, { passive: true, capture: true });
+		teardown.push(() => win.removeEventListener(type, onRestyle, { capture: true }));
 	}
 
 	if (typeof ResizeObserver !== 'undefined') {

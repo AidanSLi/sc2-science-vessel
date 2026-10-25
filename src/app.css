@@ -246,14 +246,35 @@ html.is-transparent-window .guide-rule {
 	 */
 	background-color: var(--color-surface-950);
 	/*
-	 * This element is the page's scroll container, not just its background.
+	 * A flex COLUMN, so the title bar and the scrolling page body are siblings.
 	 *
-	 * `position: fixed` removes it from the flow, so the document itself has nothing to scroll:
-	 * measured, `document.scrollingElement.scrollHeight` equalled `clientHeight` exactly (656 =
-	 * 656) while the surface's own content was 905px tall. The overflow was simply clipped and no
-	 * page could be scrolled at all. Giving the surface `overflow-y: auto` makes it the scroll
-	 * container in its own right, which is also where the content already is.
+	 * This element used to be the scroll container itself (`overflow-y: auto`), which put the
+	 * window's title bar inside the scrolling flow. The bar was `sticky top-0` to survive that,
+	 * but `sticky` only pins an element inside the scrollport: the scrollbar is still the scroll
+	 * container's, so it ran the full height of the window and drew *past* the title bar. Measured
+	 * on the real window: the 6px bar started at y=0, level with the bar's top edge, instead of at
+	 * the bar's bottom rule.
+	 *
+	 * Splitting the two is what makes the layout honest. `position: fixed; inset: 0` still removes
+	 * the surface from the document flow (required — see the root-background note above), but the
+	 * scrolling now belongs to `.app-scroll` underneath the bar, so the bar spans the window's full
+	 * width and the scrollbar begins where the bar ends. Nothing has to be `sticky` any more, which
+	 * also means the chrome does not depend on stacking rules to stay put.
 	 */
+	display: flex;
+	flex-direction: column;
+}
+
+/*
+ * The page body: everything below the title bar, and the only thing that scrolls.
+ *
+ * `min-height: 0` is load-bearing in a flex column. A flex item's default `min-height: auto`
+ * refuses to shrink below its content, so without it the item grows to the height of the page and
+ * the overflow escapes to the window instead of scrolling here.
+ */
+.app-scroll {
+	flex: 1 1 auto;
+	min-height: 0;
 	overflow-y: auto;
 }
 
@@ -261,19 +282,19 @@ html.is-transparent-window .guide-rule {
  * That scroll container needs a styled scrollbar, for the reason recorded under `.guide-steps`:
  * under a transparent webview the *default* GTK-themed scrollbar is the only part of the page
  * WebKit hands to a separate compositing layer, and everything outside it goes unpainted. Measured
- * on this exact element at 380x600: 100% painted with no scroll container, 100% with one using a
- * styled scrollbar. The bar is kept rather than hidden so long pages still show that they scroll.
+ * on an element at 380x600: 100% painted with no scroll container, 100% with one using a styled
+ * scrollbar. The bar is kept rather than hidden so long pages still show that they scroll.
  */
-.app-surface::-webkit-scrollbar {
+.app-scroll::-webkit-scrollbar {
 	width: 6px;
 }
 
-.app-surface::-webkit-scrollbar-thumb {
+.app-scroll::-webkit-scrollbar-thumb {
 	background-color: var(--color-surface-700);
 	border-radius: 3px;
 }
 
-.app-surface::-webkit-scrollbar-track {
+.app-scroll::-webkit-scrollbar-track {
 	background-color: transparent;
 }
 

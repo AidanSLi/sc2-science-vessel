@@ -375,6 +375,17 @@ and there is no extra multiplier to apply.
   effect, a `ResizeObserver`, a 2-second interval as a floor, and settling nudges after mount for
   the empty-first-composite case. A continuous `requestAnimationFrame` nudge also works but costs
   3 % of a core while idle, against 0 % for the event listeners.
+  **A `:hover`/`:focus` restyle is the one case where the nudge inside the event listener is too
+  EARLY, because that style change is applied in the frame AFTER the event is dispatched.** So
+  `pointerover`/`pointerout`/`focusin`/`focusout` additionally defer a nudge through two
+  `requestAnimationFrame` callbacks (`nudgeAfterHoverRepaint` in `src/lib/repaint.ts`), which run
+  after style recalc and layout for that frame. Without the deferred pair the order is
+  pointermove → nudge composites the whole layer → WebKit applies the hover style, invalidates only
+  the control's rectangle and discards the rest → the window is left showing just that control.
+  Measured with the buttons in the old layout: coverage fell from 100 % to 0.1 % on every hover-in.
+  Note that a `pointermove` within one element fires neither `pointerover` nor `pointerout`, so a
+  sweep across N controls fires exactly N pointerover/pointerout pairs — one per restyle, not one
+  per pixel, which is why this is cheap.
   The values **must** alternate, because re-assigning the same value is not a change and does not
   recomposite. Element promotion hints (`will-change`, `transform`, `contain`, `backdrop-filter`, a
   steady `opacity`) and an opaque root background were all measured and do **not** help, and Rust
@@ -673,14 +684,17 @@ and there is no extra multiplier to apply.
   a window edge does not), and **never compose the placement rules from prefix/suffix attribute
   selectors** — `[data-placement$='west']` also matches nothing else, but `[data-placement^='north']`
   matches `north-west`, so one property ends up owned by two rules and source order decides.
-- **The title bar is `sticky top-0 z-20`, and both halves are load-bearing.** `.app-surface`
-  (not the document) is the scroll container, so a static bar scrolled away and took the ONLY
-  drag handle with it — the window became unmovable on any page taller than the window. `fixed`
-  would also pin it but would drop it out of `.app-surface`'s flex flow; `sticky` keeps it a
-  flex item that refuses to scroll. The bar must keep an opaque background (a translucent sticky
-  header shows content through it) and a stacking context above the fixed
-  `.theme-sky`/`.theme-nebulae` layers, or the Space theme's starfield paints over the window
-  buttons. See ADR 0025.
+- **The title bar is chrome ABOVE the scrolling body, never inside it.** `.app-surface` is a flex
+  column containing exactly two things: `TitleBar.svelte` (a plain `flex h-9 shrink-0` item) and
+  `.app-scroll` (`flex: 1 1 auto; min-height: 0; overflow-y: auto`). The bar must be a SIBLING of
+  the scroll area, and the scroll area must be the only element with `overflow-y`: while the
+  surface itself scrolled, the scrollbar belonged to it and therefore ran the window's full height,
+  drawing over the bar's right end. `sticky` cannot fix that — it pins an element inside a
+  scrollport but does not move the scrollbar — so the bar has no `sticky` and no `z-*` at all. The
+  same split is why `min-height: 0` on `.app-scroll` is load-bearing: a flex item's default
+  `min-height: auto` refuses to shrink below its content and the overflow escapes to the window.
+  `src/lib/layout.test.ts` guards all of it. See ADR 0027 (which supersedes the `sticky` half of
+  ADR 0025).
 - **The analysis rectangle lives in `src-tauri/src/window_geometry.rs` and obeys four rules.**
   (1) Stored in PHYSICAL pixels — a logical rectangle saved at one display scale and restored
   at another both moves and resizes the window. (2) Captured from `Moved`/`Resized` events into

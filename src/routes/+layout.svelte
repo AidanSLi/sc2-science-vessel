@@ -27,6 +27,7 @@
 	import { observeRepaints } from '#lib/repaint';
 	import { initTheme, onThemeChange, themeHasSky, type ThemeId } from '#lib/theme';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
+	import TitleBar from '#lib/components/TitleBar.svelte';
 	import WindowEdges from '#lib/components/WindowEdges.svelte';
 	import '../app.css';
 
@@ -179,23 +180,40 @@
 	<div class="app-surface h-full w-full">
 		<!--
 			The ambient background sits UNDER the page content: `position: fixed` so it covers the
-			window while the surface scrolls, and `pointer-events: none` so it never takes a click.
+			window while the page scrolls, and `pointer-events: none` so it never takes a click.
 			Only the Space theme renders it. See `.theme-sky` in app.css.
+
+			It is FIXED rather than absolute, and deliberately not inside `.app-scroll`: a background
+			that belongs to the scrolling content scrolls away and leaves the top of the window bare.
 		-->
-		<!--
-			The window's own resize border and top-edge drag strip. Rendered here, above the page and
-			OUTSIDE `.app-surface`, because its handles are `position: fixed` against the viewport: a
-			window edge must not scroll with the content, and it must exist on every page rather than
-			only where the title bar happens to be. Overlay mode deliberately does not get one — that
-			window is a 380x600 panel the app positions itself (ADR 0016).
-		-->
-		<WindowEdges />
 		{#if themeHasSky(theme)}
 			<div class="theme-nebulae" aria-hidden="true"></div>
 			<div class="theme-sky" aria-hidden="true"></div>
 		{/if}
-		<div class="relative">
-			{@render children()}
+		<!--
+			The window's own resize border. Its handles are `position: fixed` against the viewport, so
+			it must not live inside the scrolling area: a window edge does not scroll. Overlay mode
+			deliberately does not get one — that window is a 380x600 panel the app positions itself
+			(ADR 0016).
+		-->
+		<WindowEdges />
+		<!--
+			The window's title bar sits OUTSIDE the scrolling area, as its flex sibling above it.
+			This is a structural requirement, not a styling preference: while the surface itself was
+			the scroll container, the scrollbar belonged to it and therefore ran the window's full
+			height, drawing past the title bar and starting level with the window's top edge.
+			Scrolling below the bar is what makes the bar span the full width and the scrollbar begin
+			where the bar ends. See `.app-surface` in app.css.
+
+			It is rendered here rather than in `(app)/+layout.svelte` because it must outlive every
+			route: a route change replaces the page body, and a bar inside that body would be destroyed
+			and rebuilt (losing the maximised state it tracks) on every navigation.
+		-->
+		<TitleBar />
+		<div class="app-scroll">
+			<div class="relative">
+				{@render children()}
+			</div>
 		</div>
 	</div>
 {/if}

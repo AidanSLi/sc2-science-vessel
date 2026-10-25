@@ -102,25 +102,30 @@
 	subtle wash (14%) rather than a solid fill so the title bar does not become the brightest thing on
 	screen, which a full-strength gold or orange would.
 
-	`sticky top-0`, not a static strip: the window is frameless, so this bar is the ONLY place a
-	drag can start, and `.app-surface` — not the document — is the element that scrolls (see the
-	comment on it in app.css). A long page therefore used to carry the one drag handle off the top
-	of the screen, leaving a window that could not be moved without first scrolling back up. A
-	sticky bar keeps the handle under the pointer at every scroll position.
+	This is a plain flex item, NOT `sticky`, and that is worth understanding before changing it back.
+	The bar is the first child of `.app-surface`, which is a flex column; the page body is its
+	sibling in `.app-scroll`, which is the only thing that scrolls. So the bar is structurally
+	outside the scrollport: it cannot scroll away, and — the reason this arrangement exists — the
+	scrollbar belongs to `.app-scroll` and therefore starts BELOW the bar instead of running the
+	window's full height and drawing past it.
 
-	Two details are required for that to be safe rather than merely clever:
+	The earlier arrangement put the bar inside the scroll container and pinned it with `sticky`.
+	That kept the drag handle reachable, but the scrollbar still belonged to the container, so the
+	two pieces of chrome disagreed about where the top of the page was: measured on the real window,
+	the 6px scrollbar began at y=0, level with the bar's top edge, and drew over the bar's right end.
+
+	Two details are still load-bearing:
 
 	1. **An opaque background.** It already has one — `color-mix` of two opaque tokens is opaque —
-	   so content scrolling underneath cannot show through the bar.
-	2. **A stacking context above the page.** `z-20` is above the page content and the sky layers,
-	   which are `position: fixed` at z-index auto. Without it, cards scroll over the bar.
+	   so nothing can show through the bar.
+	2. **`shrink-0`.** In a flex column a 36px item would otherwise be squeezed by a tall sibling.
 
 	The resize edges are deliberately NOT inside the header. They are viewport-anchored in
-	`WindowEdges.svelte`, because a window edge does not scroll and this bar does — see the comment
-	there for the bug that taught us the difference.
+	`WindowEdges.svelte`, because a window edge is not part of the page — see the comment there for
+	the bug that taught us the difference.
 -->
 <header
-	class="sticky top-0 z-20 flex h-9 shrink-0 select-none items-center gap-3 border-b bg-surface-900 px-3"
+	class="flex h-9 shrink-0 select-none items-center gap-3 border-b bg-surface-900 px-3"
 	style="background-color: color-mix(in oklab, var(--color-surface-900) 86%, var(--color-accent-2)); border-bottom-color: var(--color-accent-2)"
 >
 	<!--

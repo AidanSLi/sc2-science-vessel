@@ -13,9 +13,9 @@
  *    `North`/`West`/`East` handles happened to line up with the window's own edges, which is why
  *    only one edge looked broken.
  *
- * 2. **A window edge must not scroll.** The title bar is `sticky top-0` (ADR 0025): it is always at
- *    the top of the viewport, but the page scrolls underneath it. The window's edges do not move at
- *    all. So a handle cannot be drawn inside the bar however it is positioned.
+ * 2. **A window edge is not part of the page.** The title bar is chrome that lives above the
+ *    scrolling body (ADR 0027), and the window's edges are further out still: they never move, and
+ *    they are not content. So a handle cannot be drawn inside the bar however it is positioned.
  *
  * Hence: handles live in `WindowEdges.svelte`, anchored to the viewport by `position: fixed` (see
  * `.window-resize-edge` in app.css, which for a frameless window IS the window).

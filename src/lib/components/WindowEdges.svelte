@@ -15,9 +15,10 @@
 	 *
 	 * Two further things put this component here rather than in `TitleBar.svelte`:
 	 *
-	 * 1. The title bar is `sticky top-0` (ADR 0025) — always at the top of the viewport, with the
-	 *    page scrolling under it — whereas a window edge never moves. Content inside the bar cannot
-	 *    represent a window edge, whatever it is positioned against.
+	 * 1. The title bar is a flex item above the scrolling page body (ADR 0027), so it is chrome
+	 *    rather than content — whereas a window edge is neither: it never moves and it is not part of
+	 *    the page at all. Content inside the bar cannot represent a window edge, whatever it is
+	 *    positioned against.
 	 * 2. Only the analysis view has a window the player can resize. Overlay mode is a 380x600
 	 *    override-redirect panel the app positions itself (ADR 0016), so it must not grow a resize
 	 *    border; the root layout renders this component only in the analysis branch.

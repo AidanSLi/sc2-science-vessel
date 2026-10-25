@@ -161,9 +161,9 @@ describe('the frameless window resize border', () => {
 		expect(component).toContain('data-placement={edge.placement}');
 		expect(component).toContain('window-resize-edge');
 
-		// The title bar must no longer carry resize handles at all. It is `sticky`, so anything
-		// positioned inside it is measured against the bar rather than against the window — which is
-		// precisely how a `South` handle ended up resizing the window from under the title bar.
+		// The title bar must no longer carry resize handles at all. Anything positioned inside it is
+		// measured against the bar rather than against the window — which is precisely how a `South`
+		// handle ended up resizing the window from under the title bar.
 		const titleBar = readFileSync(new URL('./components/TitleBar.svelte', import.meta.url), 'utf8');
 		// The doc comment in TitleBar.svelte mentions `startResizeDragging` on purpose (it records this
 		// very bug), so the assertion is about CALLS, not about the word.

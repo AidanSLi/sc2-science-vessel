@@ -5,11 +5,14 @@
 	 * The indicator is here rather than on a settings page because whether the client API
 	 * is reachable decides whether the overlay can follow a real game at all — it is the
 	 * project's single biggest unknown, so it is surfaced permanently.
+	 *
+	 * The window's title bar is NOT here: it lives in the root layout, outside the scrolling
+	 * area, because the scrollbar has to begin below it (see `.app-surface` in app.css) and
+	 * because it must survive route changes.
 	 */
 	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { isTauri, pollClientApi, type LiveState } from '#lib/client-api';
-	import TitleBar from '#lib/components/TitleBar.svelte';
 
 	let { children } = $props();
 
@@ -64,12 +67,6 @@
 </script>
 
 <div class="flex min-h-full flex-col">
-	<!--
-		The window's own title bar, replacing the native decoration (see TitleBar.svelte). It sits
-		ABOVE the app header and shares its surface colour, so the two read as one continuous piece
-		of chrome flush with the content rather than as a title bar stacked on a page.
-	-->
-	<TitleBar />
 	<!--
 		The header's bottom rule is the theme's SECONDARY colour, not a neutral hairline. Every screen
 		in the app is under this bar, so it is the one border the user cannot avoid seeing, and leaving
