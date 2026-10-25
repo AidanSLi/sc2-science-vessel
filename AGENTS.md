@@ -655,19 +655,32 @@ and there is no extra multiplier to apply.
   Mesa-only stack, so it is not a default. See ADR 0022.
 - **The window is frameless in both modes and the title bar is page markup**
   (`src/lib/components/TitleBar.svelte`), because a toolkit headerbar follows the desktop's
-  theme and cannot follow ours. Two consequences are easy to break: a drag region's resize
-  handles must be SIBLINGS of it (a handle inside a drag region starts a move, not a
-  resize), and removing the component makes the window immovable and unresizable, so the
+  theme and cannot follow ours. Removing the component makes the window immovable, so the
   `core:window:allow-start-*dragging` / minimise / maximise / close capabilities are
   load-bearing and must not be pruned.
+- **A resize handle's box and the edge it resizes are two different things, and the handle must
+  be anchored to the WINDOW.** `startResizeDragging` names a side of the window; a handle is a
+  rectangle in the page. The eight handles used to be `absolute` inside the 36px title bar, so
+  `bottom-0` resolved against the *bar's* bottom edge while `'South'` resized the *window's*
+  bottom — dragging the bottom of the title bar resized the bottom of the window, hundreds of
+  pixels away from the pointer. `North`/`West`/`East` coincided with the real edges and hid it,
+  which is why only one side looked wrong. The handle is a box; the direction is a window side;
+  they must be measured against the same thing. They now live in
+  `src/lib/components/WindowEdges.svelte` as `position: fixed` viewport edges (fixed IS the
+  window for a frameless one), rendered from `#lib/window-edges` and covered by
+  `src/lib/window-edges.test.ts`, which solves all eight rectangles and asserts none overlap.
+  Two rules follow: **never put a resize handle inside the sticky title bar** (the bar scrolls,
+  a window edge does not), and **never compose the placement rules from prefix/suffix attribute
+  selectors** — `[data-placement$='west']` also matches nothing else, but `[data-placement^='north']`
+  matches `north-west`, so one property ends up owned by two rules and source order decides.
 - **The title bar is `sticky top-0 z-20`, and both halves are load-bearing.** `.app-surface`
   (not the document) is the scroll container, so a static bar scrolled away and took the ONLY
-  drag handle and all eight resize handles with it — the window became unmovable on any page
-  taller than the window. `fixed` would also pin it but would drop it out of `.app-surface`'s
-  flex flow; `sticky` keeps it a flex item that refuses to scroll. The bar must keep an opaque
-  background (a translucent sticky header shows content through it) and a stacking context
-  above the fixed `.theme-sky`/`.theme-nebulae` layers, or the Space theme's starfield paints
-  over the window buttons. See ADR 0025.
+  drag handle with it — the window became unmovable on any page taller than the window. `fixed`
+  would also pin it but would drop it out of `.app-surface`'s flex flow; `sticky` keeps it a
+  flex item that refuses to scroll. The bar must keep an opaque background (a translucent sticky
+  header shows content through it) and a stacking context above the fixed
+  `.theme-sky`/`.theme-nebulae` layers, or the Space theme's starfield paints over the window
+  buttons. See ADR 0025.
 - **The analysis rectangle lives in `src-tauri/src/window_geometry.rs` and obeys four rules.**
   (1) Stored in PHYSICAL pixels — a logical rectangle saved at one display scale and restored
   at another both moves and resizes the window. (2) Captured from `Moved`/`Resized` events into

@@ -278,6 +278,100 @@ html.is-transparent-window .guide-rule {
 }
 
 /*
+ * The frameless window's resize border and top-edge drag strip.
+ *
+ * These are `position: fixed` against the VIEWPORT, which for a frameless window is the window
+ * itself. That is the entire point: `startResizeDragging` names a side of the WINDOW, so a handle
+ * positioned inside any smaller box resizes an edge the pointer is nowhere near.
+ *
+ * Measured, and the reason this block exists: the handles used to be absolutely positioned inside
+ * the 36px title bar, so the `South` handle lay across the bar's bottom edge while `'South'`
+ * resized the window's bottom — dragging the bottom of the title bar resized the bottom of the
+ * window from a strip 800px away from where the user was pointing. `North`, `West` and `East`
+ * coincided with the window's own edges by accident.
+ *
+ * The geometry is arranged so no two handles overlap:
+ * - an edge runs `0.5rem` short of each end, which is exactly the corner square;
+ * - the corners run from `0.5rem` to `1rem`, i.e. through the middle of the edge's 4px thickness
+ *   (0.5rem..0.75rem), so the corner owns the shared span and the edge can never be beneath it.
+ * Both facts are asserted against the solver in `src/lib/window-edges.test.ts`, because the whole
+ * failure mode here is invisible in review and only shows up as a drag that resizes the wrong side.
+ */
+.window-resize-edge {
+	position: fixed;
+	z-index: 40;
+}
+
+/*
+ * One rule per direction, spelled out rather than composed from prefix/suffix attribute selectors.
+ * A composed version (`[data-placement^='north']`, `[data-placement$='west']`) looks tidier and is
+ * wrong: `[data-placement^='north']` also matches `north-west`, so `left: 0` for the west edge and
+ * the corner's own `left: 0` would fight over one property inside one element and source order
+ * would decide the winner. Eight explicit blocks cannot collide, and
+ * `src/lib/window-edges.test.ts` solves the rectangles and asserts they stay apart.
+ *
+ * Every edge is inset by `1rem` (CORNER_SIZE) along its own length, so a corner and an edge never
+ * share a pixel: the corner owns the 16x16 square in the window corner and the edge starts just
+ * past it. That is what makes the element under the pointer name exactly one direction.
+ */
+.window-resize-edge[data-placement='north'] {
+	top: 0;
+	left: 1rem;
+	right: 1rem;
+	height: 4px;
+}
+
+.window-resize-edge[data-placement='south'] {
+	bottom: 0;
+	left: 1rem;
+	right: 1rem;
+	height: 4px;
+}
+
+.window-resize-edge[data-placement='west'] {
+	left: 0;
+	top: 1rem;
+	bottom: 1rem;
+	width: 4px;
+}
+
+.window-resize-edge[data-placement='east'] {
+	right: 0;
+	top: 1rem;
+	bottom: 1rem;
+	width: 4px;
+}
+
+/* The four corner squares, 16px on a side, filling the window corner the edges are inset from. */
+.window-resize-edge[data-placement='north-west'] {
+	top: 0;
+	left: 0;
+	width: 16px;
+	height: 16px;
+}
+
+.window-resize-edge[data-placement='north-east'] {
+	top: 0;
+	right: 0;
+	width: 16px;
+	height: 16px;
+}
+
+.window-resize-edge[data-placement='south-west'] {
+	bottom: 0;
+	left: 0;
+	width: 16px;
+	height: 16px;
+}
+
+.window-resize-edge[data-placement='south-east'] {
+	bottom: 0;
+	right: 0;
+	width: 16px;
+	height: 16px;
+}
+
+/*
  * The guide's panel, and why its "fully transparent" state is not literally zero alpha.
  *
  * With a transparent webview, a page whose root backgrounds are transparent and whose content is

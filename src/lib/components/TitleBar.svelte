@@ -12,11 +12,15 @@
 	 * easy to get subtly wrong:
 	 *
 	 * 1. **Dragging.** A non-interactive `data-tauri-drag-region` strip makes the window move.
-	 * 2. **Resizing.** A frameless window has no toolkit resize border, so eight invisible edges
-	 *    call `startResizeDragging`. They are siblings of the drag region rather than children,
-	 *    because a resize handle inside a drag region would start a move instead of a resize.
-	 * 3. **Focus.** Clicking any of it must not be swallowed by the drag region, so the buttons
+	 * 2. **Focus.** Clicking any of it must not be swallowed by the drag region, so the buttons
 	 *    opt out with `data-tauri-drag-region="false"`.
+	 *
+	 * Resizing is NOT here, and that is a correction rather than an omission. The eight resize
+	 * handles used to be absolutely positioned inside this header, which made them wrong: a handle
+	 * is a box in the page, but `startResizeDragging` names a side of the WINDOW. `bottom-0` resolved
+	 * against the 36px bar, so the `South` handle sat across the bar's bottom edge and resized the
+	 * window's bottom — dragging the bottom of the title bar resized the window from 800px away from
+	 * the pointer. They now live in `WindowEdges.svelte` as `position: fixed` viewport edges.
 	 *
 	 * The bar is hidden in overlay mode: a build guide pinned over a game has `decorations: false`
 	 * already and must not grow a title bar, so this component is only mounted by the analysis
@@ -30,42 +34,6 @@
 
 	/** Whether the window is currently maximised, for the button's icon and label. */
 	let maximised = $state(false);
-
-	/**
-	 * The eight resize handles, as [direction, cursor, position classes].
-	 *
-	 * `nwse-resize` on the diagonals and `ns`/`ew` on the edges is the convention every desktop
-	 * uses, so the cursor alone tells the user what the handle does.
-	 */
-	const handles = [
-		['North', 'cursor-ns-resize', 'top-0 left-2 right-2 h-1'],
-		['South', 'cursor-ns-resize', 'bottom-0 left-2 right-2 h-1'],
-		['West', 'cursor-ew-resize', 'left-0 top-2 bottom-2 w-1'],
-		['East', 'cursor-ew-resize', 'right-0 top-2 bottom-2 w-1'],
-		['NorthWest', 'cursor-nwse-resize', 'top-0 left-0 h-3 w-3'],
-		['NorthEast', 'cursor-nesw-resize', 'top-0 right-0 h-3 w-3'],
-		['SouthWest', 'cursor-nesw-resize', 'bottom-0 left-0 h-3 w-3'],
-		['SouthEast', 'cursor-nwse-resize', 'bottom-0 right-0 h-3 w-3']
-	] as const;
-
-	/**
-	 * Asks the window manager to start a resize drag from a handle.
-	 *
-	 * Failures are swallowed: outside the desktop shell there is no window to resize, and in the
-	 * shell a refused resize is the window manager's decision rather than something the user can
-	 * act on.
-	 *
-	 * @param direction One of Tauri's `ResizeDirection` variants.
-	 */
-	async function startResize(direction: string) {
-		if (!isTauri()) return;
-		try {
-			const { getCurrentWindow } = await import('@tauri-apps/api/window');
-			await getCurrentWindow().startResizeDragging(direction as never);
-		} catch {
-			// Nothing to report: the window simply does not resize on this path.
-		}
-	}
 
 	/**
 	 * Runs a window action and refreshes the maximised flag afterwards.
@@ -147,8 +115,9 @@
 	2. **A stacking context above the page.** `z-20` is above the page content and the sky layers,
 	   which are `position: fixed` at z-index auto. Without it, cards scroll over the bar.
 
-	The resize handles stay inside the header, so they travel with it; a frameless window needs its
-	edges reachable for the same reason it needs its drag region reachable.
+	The resize edges are deliberately NOT inside the header. They are viewport-anchored in
+	`WindowEdges.svelte`, because a window edge does not scroll and this bar does — see the comment
+	there for the bug that taught us the difference.
 -->
 <header
 	class="sticky top-0 z-20 flex h-9 shrink-0 select-none items-center gap-3 border-b bg-surface-900 px-3"
@@ -158,6 +127,9 @@
 		The drag region is the whole bar minus the buttons: `data-tauri-drag-region` makes the
 		element a move handle, and children inherit the behaviour, so every interactive child
 		opts out explicitly.
+
+		Note the bar is NOT a resize surface at any point along its bottom edge: that strip is page
+		content now, and the window's own edges are the only things that resize it.
 	-->
 	<!--
 		`data-tauri-drag-region="deep"`, not the bare attribute. Tauri's `drag.js` treats a bare
@@ -194,19 +166,6 @@
 		{@render windowButton(maximised ? 'Restore' : 'Maximise', () => void act('toggleMaximize'), maximiseIcon)}
 		{@render windowButton('Close', () => void act('close'), closeIcon, true)}
 	</div>
-
-	<!-- Resize handles, siblings of the drag region so a drag on an edge resizes, not moves. -->
-	{#each handles as [direction, cursor, position] (direction)}
-		<div
-			class="absolute {cursor} {position}"
-			data-tauri-drag-region="false"
-			onpointerdown={(event) => {
-				event.preventDefault();
-				void startResize(direction);
-			}}
-			role="presentation"
-		></div>
-	{/each}
 </header>
 
 {#snippet minimiseIcon()}

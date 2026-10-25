@@ -27,6 +27,7 @@
 	import { observeRepaints } from '#lib/repaint';
 	import { initTheme, onThemeChange, themeHasSky, type ThemeId } from '#lib/theme';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
+	import WindowEdges from '#lib/components/WindowEdges.svelte';
 	import '../app.css';
 
 	let { children } = $props();
@@ -181,6 +182,14 @@
 			window while the surface scrolls, and `pointer-events: none` so it never takes a click.
 			Only the Space theme renders it. See `.theme-sky` in app.css.
 		-->
+		<!--
+			The window's own resize border and top-edge drag strip. Rendered here, above the page and
+			OUTSIDE `.app-surface`, because its handles are `position: fixed` against the viewport: a
+			window edge must not scroll with the content, and it must exist on every page rather than
+			only where the title bar happens to be. Overlay mode deliberately does not get one — that
+			window is a 380x600 panel the app positions itself (ADR 0016).
+		-->
+		<WindowEdges />
 		{#if themeHasSky(theme)}
 			<div class="theme-nebulae" aria-hidden="true"></div>
 			<div class="theme-sky" aria-hidden="true"></div>
