@@ -660,6 +660,36 @@ and there is no extra multiplier to apply.
   resize), and removing the component makes the window immovable and unresizable, so the
   `core:window:allow-start-*dragging` / minimise / maximise / close capabilities are
   load-bearing and must not be pruned.
+- **The title bar is `sticky top-0 z-20`, and both halves are load-bearing.** `.app-surface`
+  (not the document) is the scroll container, so a static bar scrolled away and took the ONLY
+  drag handle and all eight resize handles with it — the window became unmovable on any page
+  taller than the window. `fixed` would also pin it but would drop it out of `.app-surface`'s
+  flex flow; `sticky` keeps it a flex item that refuses to scroll. The bar must keep an opaque
+  background (a translucent sticky header shows content through it) and a stacking context
+  above the fixed `.theme-sky`/`.theme-nebulae` layers, or the Space theme's starfield paints
+  over the window buttons. See ADR 0025.
+- **The analysis rectangle lives in `src-tauri/src/window_geometry.rs` and obeys four rules.**
+  (1) Stored in PHYSICAL pixels — a logical rectangle saved at one display scale and restored
+  at another both moves and resizes the window. (2) Captured from `Moved`/`Resized` events into
+  an in-memory `Mutex`, flushed by a 1 Hz debounce plus an immediate flush on hide and on a
+  visible start; a drag emits dozens of events and each one writing `settings.json` would be a
+  file write per frame. (3) Two one-shot `AtomicBool` guards: `RESTORING` swallows the events a
+  restore causes, and `PLACED` blocks capture until `restore` has placed the window — without
+  `PLACED`, the start-up resize at 1280x820 centred is captured as if it were a drag and
+  overwrites the player's rectangle on the next launch (measured: a saved
+  `1100x700+300+150` came back as `1280x820+1280+644` one launch later). (4) Only analysis mode
+  records anything, and never while maximised or fullscreen — the overlay is deliberately
+  resized to 380x600 per match (ADR 0016/0017), and a maximised window reports the screen's
+  rectangle, which no containment test can tell apart from a player filling the screen. A saved
+  rectangle restores only if `WindowGeometry::is_restorable` finds >64 px of overlap on BOTH
+  axes with an attached monitor; otherwise fall back to 1280x820 centred. See ADR 0025.
+- **Any new code path that shows the analysis window must apply the saved rectangle.** There are
+  two reveal paths and they are easy to bring out of step: `apply_window_mode(_, Visibility::Shown)`
+  (hotkey, watcher) restores, but `warm_or_reveal_main_window` shows the window directly and had
+  to be given its own `window_geometry::restore` call. A new path that only calls `show()` will
+  silently ignore a rectangle the player chose, and the failure looks like "the save is broken"
+  rather than "this one path forgot". Restore AFTER `show()` in every case: a geometry request
+  against an unrealised `GdkWindow` is lost.
 
 ## Packaging and platform support
 

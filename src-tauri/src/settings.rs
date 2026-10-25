@@ -104,6 +104,81 @@ pub struct Settings {
     /// of failing to parse the whole settings document and losing every other setting with it.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Where the analysis window was last placed and how big it was.
+    ///
+    /// `None` until the player has moved or resized the window, which is why it is optional
+    /// rather than carrying a default rectangle: "never placed" and "placed at the default
+    /// spot" have to be distinguishable, or a first run would restore a position it invented.
+    /// See [`WindowGeometry`].
+    #[serde(default)]
+    pub analysis_geometry: Option<WindowGeometry>,
+}
+
+/// A saved window rectangle, in **physical** pixels.
+///
+/// Physical rather than logical on purpose. This is restored by the shell on a later launch,
+/// possibly at a different display scale than the one it was saved under, and Tauri's
+/// `PhysicalPosition`/`PhysicalSize` are the only units that mean the same thing on both
+/// sides of a restart: a logical rectangle saved at 2.0 scale and restored at 1.0 would move
+/// the window and halve it. The struct is unit-agnostic in name so that reading the field
+/// does not invite the wrong assumption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowGeometry {
+    /// Left edge, in physical pixels from the virtual desktop's origin.
+    pub x: i32,
+    /// Top edge, in physical pixels.
+    pub y: i32,
+    /// Outer width, in physical pixels.
+    pub width: u32,
+    /// Outer height, in physical pixels.
+    pub height: u32,
+}
+
+impl WindowGeometry {
+    /// Whether this rectangle is worth restoring on a given screen layout.
+    ///
+    /// A saved rectangle can stop making sense: the player unplugged the monitor it was on,
+    /// or changed the resolution. Restoring it blindly would put the window off-screen with
+    /// no way to drag it back — a frameless window has no title bar in the window manager
+    /// sense, so "move it into view" is not something the desktop can do for the user.
+    ///
+    /// The test is deliberately loose in one direction and strict in the other: the window
+    /// only has to *touch* a monitor (so a window half off the right edge still restores), but
+    /// it must not be smaller than the app's own interactive floor, because a 12-pixel-wide
+    /// window is indistinguishable from a crash.
+    ///
+    /// @param monitors The monitors currently attached, as (x, y, width, height) in physical px.
+    /// @param min_width The smallest width the window may have.
+    /// @param min_height The smallest height the window may have.
+    /// @returns `true` when the rectangle should be restored.
+    pub fn is_restorable(
+        &self,
+        monitors: &[(i32, i32, u32, u32)],
+        min_width: u32,
+        min_height: u32,
+    ) -> bool {
+        if self.width < min_width || self.height < min_height {
+            return false;
+        }
+        // Overlap rather than containment: a window deliberately parked half off-screen is a
+        // legitimate layout, and demanding full containment would silently undo it every launch.
+        let left = self.x as i64;
+        let top = self.y as i64;
+        let right = left + self.width as i64;
+        let bottom = top + self.height as i64;
+        monitors.iter().any(|&(mx, my, mw, mh)| {
+            let mleft = mx as i64;
+            let mtop = my as i64;
+            let mright = mleft + mw as i64;
+            let mbottom = mtop + mh as i64;
+            // A minimum visible area, so a window whose last 3 pixels touch a monitor counts as
+            // lost rather than as placed.
+            let overlap_w = right.min(mright) - left.max(mleft);
+            let overlap_h = bottom.min(mbottom) - top.max(mtop);
+            overlap_w > 64 && overlap_h > 64
+        })
+    }
 }
 
 /// Returns the default accelerator as an owned string, for serde's `default` attribute.
@@ -125,6 +200,7 @@ impl Default for Settings {
             start_hidden: true,
             launch_at_login: false,
             theme: default_theme(),
+            analysis_geometry: None,
         }
     }
 }
@@ -470,5 +546,109 @@ mod tests {
         assert_eq!(loaded.build_presets, original.build_presets);
         // Wildcards are just keys, so they survive alongside exact matchups.
         assert_eq!(loaded.build_presets["ZvX"], "bundled-2");
+    }
+
+    /// One 1920x1080 monitor at the origin, which is the common single-screen case.
+    const ONE_SCREEN: &[(i32, i32, u32, u32)] = &[(0, 0, 1920, 1080)];
+
+    #[test]
+    fn geometry_round_trips_through_json() {
+        let geometry = WindowGeometry {
+            x: 120,
+            y: 80,
+            width: 1280,
+            height: 820,
+        };
+        let original = Settings {
+            analysis_geometry: Some(geometry),
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&original).expect("must serialise");
+        let loaded: Settings = serde_json::from_str(&text).expect("must parse");
+        assert_eq!(loaded.analysis_geometry, Some(geometry));
+    }
+
+    #[test]
+    fn geometry_is_absent_by_default() {
+        // "Never placed" must be distinguishable from "placed at the default spot", or a first
+        // run restores a rectangle it invented. An absent field has to deserialise to `None`.
+        let loaded: Settings = serde_json::from_str(r#"{"theme":"zerg"}"#).expect("must parse");
+        assert!(loaded.analysis_geometry.is_none());
+    }
+
+    #[test]
+    fn geometry_is_restorable_on_the_monitor_it_was_saved_on() {
+        let geometry = WindowGeometry {
+            x: 200,
+            y: 100,
+            width: 1280,
+            height: 820,
+        };
+        assert!(geometry.is_restorable(ONE_SCREEN, 720, 480));
+    }
+
+    #[test]
+    fn geometry_off_every_monitor_is_not_restorable() {
+        // The regression this guards: the monitor the window was on has been unplugged. A
+        // frameless window has no native title bar, so restoring this would strand the window
+        // off-screen with nothing to drag.
+        let geometry = WindowGeometry {
+            x: 4000,
+            y: 100,
+            width: 1280,
+            height: 820,
+        };
+        assert!(!geometry.is_restorable(ONE_SCREEN, 720, 480));
+    }
+
+    #[test]
+    fn geometry_half_off_screen_is_restorable() {
+        // Parked half off the right edge is a legitimate layout the player chose; demanding full
+        // containment would silently undo it on every launch.
+        let geometry = WindowGeometry {
+            x: 1400,
+            y: 100,
+            width: 1280,
+            height: 820,
+        };
+        assert!(geometry.is_restorable(ONE_SCREEN, 720, 480));
+    }
+
+    #[test]
+    fn geometry_barely_touching_a_monitor_is_not_restorable() {
+        // A window whose last few pixels graze the screen is lost, not placed: there would be
+        // nothing to grab.
+        let geometry = WindowGeometry {
+            x: 1900,
+            y: 100,
+            width: 1280,
+            height: 820,
+        };
+        assert!(!geometry.is_restorable(ONE_SCREEN, 720, 480));
+    }
+
+    #[test]
+    fn geometry_smaller_than_the_floor_is_not_restorable() {
+        let geometry = WindowGeometry {
+            x: 100,
+            y: 100,
+            width: 200,
+            height: 150,
+        };
+        assert!(!geometry.is_restorable(ONE_SCREEN, 720, 480));
+    }
+
+    #[test]
+    fn geometry_restores_onto_a_second_monitor() {
+        // Two screens side by side: a rectangle on the right-hand one is valid, which the
+        // containment check alone would get right only if it iterated the monitors.
+        let monitors = [(0, 0, 1920, 1080), (1920, 0, 2560, 1440)];
+        let geometry = WindowGeometry {
+            x: 2400,
+            y: 200,
+            width: 1280,
+            height: 820,
+        };
+        assert!(geometry.is_restorable(&monitors, 720, 480));
     }
 }

@@ -133,9 +133,25 @@
 	window frame part of the palette: in Terran it is a steel strip, in Protoss a gold one. It is a
 	subtle wash (14%) rather than a solid fill so the title bar does not become the brightest thing on
 	screen, which a full-strength gold or orange would.
+
+	`sticky top-0`, not a static strip: the window is frameless, so this bar is the ONLY place a
+	drag can start, and `.app-surface` — not the document — is the element that scrolls (see the
+	comment on it in app.css). A long page therefore used to carry the one drag handle off the top
+	of the screen, leaving a window that could not be moved without first scrolling back up. A
+	sticky bar keeps the handle under the pointer at every scroll position.
+
+	Two details are required for that to be safe rather than merely clever:
+
+	1. **An opaque background.** It already has one — `color-mix` of two opaque tokens is opaque —
+	   so content scrolling underneath cannot show through the bar.
+	2. **A stacking context above the page.** `z-20` is above the page content and the sky layers,
+	   which are `position: fixed` at z-index auto. Without it, cards scroll over the bar.
+
+	The resize handles stay inside the header, so they travel with it; a frameless window needs its
+	edges reachable for the same reason it needs its drag region reachable.
 -->
 <header
-	class="relative flex h-9 shrink-0 select-none items-center gap-3 border-b bg-surface-900 px-3"
+	class="sticky top-0 z-20 flex h-9 shrink-0 select-none items-center gap-3 border-b bg-surface-900 px-3"
 	style="background-color: color-mix(in oklab, var(--color-surface-900) 86%, var(--color-accent-2)); border-bottom-color: var(--color-accent-2)"
 >
 	<!--

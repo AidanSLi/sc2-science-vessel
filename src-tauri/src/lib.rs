@@ -42,6 +42,7 @@ mod notify;
 mod platform;
 mod settings;
 mod sidecar;
+mod window_geometry;
 #[cfg(target_os = "linux")]
 pub mod x11_overlay;
 
@@ -329,6 +330,13 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
         // see to skip its own re-show.
         window.hide()?;
         release_unmanaged_and_visibility(&window, false);
+        // The player has just finished with the window, so this is the moment their rectangle is
+        // worth keeping: the debounce thread may still be up to a second behind, and the app can
+        // be quit while hidden. Failures are reported but do not fail the toggle — the window is
+        // already hidden, which is what the player asked for.
+        if let Err(err) = window_geometry::flush(&app) {
+            eprintln!("could not save the window geometry on hide ({err})");
+        }
         Ok(false)
     } else {
         reveal_for_hotkey(&app)?;
@@ -429,6 +437,19 @@ fn warm_or_reveal_main_window(app: tauri::AppHandle) {
 
         if !start_hidden {
             let _ = window.show();
+            // This path reveals the window WITHOUT going through `apply_window_mode` (the mode
+            // is already whatever `tauri.conf.json` declared, which is analysis), so the saved
+            // rectangle has to be applied here too or a visible start would ignore it. Placed
+            // after the `show` for the same reason as everywhere else: a geometry request
+            // against an unrealised `GdkWindow` is lost.
+            //
+            // Measured before this call existed: a window saved at 1100x700+300+150 came back at
+            // 1280x820 centred on every launch, while a hide-then-reveal (which does go through
+            // `apply_window_mode`) restored it correctly — the asymmetry between the two reveal
+            // paths was the bug.
+            if window_mode() == WindowMode::Analysis {
+                window_geometry::restore(&app, &window);
+            }
             // A view that was transparent from creation can finish its first composite with an
             // empty backing store, leaving the window fully see-through until something later
             // forces a repaint. Measured on the analysis view: one launch in five started at
@@ -447,6 +468,10 @@ fn warm_or_reveal_main_window(app: tauri::AppHandle) {
                     eprintln!("could not repaint the starting window ({err})");
                 }
             }
+            // The rectangle is now settled, so this is the best moment to persist it: it makes
+            // the first launch write a geometry at all (there is nothing to capture until the
+            // player moves the window), which is what the next launch restores.
+            let _ = window_geometry::flush(&app);
         }
     });
 }
@@ -702,13 +727,19 @@ fn apply_window_mode(
             // for a hidden window the constraints alone are what will apply when it is next
             // shown, so skipping the resize and the re-centre there loses nothing.
             if should_show {
-                window.set_size(tauri::LogicalSize::new(ANALYSIS_WIDTH, ANALYSIS_HEIGHT))?;
-                // Only re-centre a window that the player is asking to see. Re-centring one
-                // they had deliberately placed would move it on every automatic scan of
-                // client state.
-                if visibility == Visibility::Shown {
-                    window.center()?;
-                }
+                // The saved rectangle, or the configured default on a first run. This replaces an
+                // unconditional `set_size(1280x820)` + `center()`: the player now keeps the size
+                // and position they chose, across a hide/show cycle and across launches, which is
+                // what `window_geometry` exists for.
+                //
+                // It is called after `show()` for the same reason every other geometry request in
+                // this function is: a request against an unrealised `GdkWindow` is lost. See the
+                // overlay branch above for the measurement.
+                //
+                // Only for a window the player is asking to see, though. An automatic mode change
+                // runs this with `Visibility::Unchanged` and the window still hidden, and placing
+                // a hidden window there would be wasted work that a later reveal overwrites anyway.
+                window_geometry::restore(app, &window);
             }
             // Only raise and focus when the player asked for the window. An automatic mode change
             // must never pull focus away from a running game.
@@ -1389,6 +1420,11 @@ pub fn run() {
             // can reveal a GUI that was spawned hidden. See `gui_control`.
             start_gui_listener(app.handle().clone());
 
+            // Persist the analysis window's size and position. `capture` only stores the
+            // rectangle in memory (a drag emits dozens of events), so this thread is what
+            // actually writes it — see `window_geometry`.
+            window_geometry::start_debounce(app.handle().clone());
+
             // The tray icon, which is how a resident app is reached when its window is hidden.
             // Without it the app could be running invisibly with no way to quit it short of a
             // task manager.
@@ -1428,6 +1464,13 @@ pub fn run() {
 
             arm_main_window_watchdog(app.handle().clone());
             Ok(())
+        })
+        // Window events are how the analysis rectangle is observed. A builder-level handler
+        // rather than a per-window one because the window is the only one the app has, and
+        // `window_geometry::on_window_event` is what filters for `Moved`/`Resized`, ignores
+        // overlay mode and swallows the events of a restore.
+        .on_window_event(|window, event| {
+            window_geometry::on_window_event(&window.app_handle().clone(), event);
         })
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
