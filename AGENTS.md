@@ -282,21 +282,30 @@ and there is no extra multiplier to apply.
   keyed by the **string** `"1"`/`"2"` rather than by int pid, and each step is
   `{frame, time, name, supply, is_worker, clock_position, is_chronoboosted}`. Ability and
   unit-loss entries have no `supply` key at all, so read it defensively.
-- **There is ONE window, and it has two *modes* — not two windows.** The user's rule: "There
-  is no separate 'app window' and 'overlay window'. It is all the app window." The mode is
-  either `analysis` (resizable, decorated, interactive — matches, builds, analysis, settings)
-  or `overlay` (borderless, transparent, click-through, pinned over the game). The window's
-  own view is swapped by `src/routes/+layout.svelte` rendering either `<BuildOrderGuide />` or
-  the route children. Never create a second window; a second one duplicates the route and the
-  flags and the two drift apart. `apply_window_mode` in `src-tauri/src/lib.rs` is the **only**
-  thing that may set decorations, click-through, always-on-top, `skip_taskbar` or the size,
-  because those flags do not reliably survive a hide/show cycle: a click-through overlay that
-  has quietly become clickable is discovered mid-game, which is the worst time.
+- **There are TWO windows, one per *mode* — and that is a correctness requirement, not a
+  preference.** The mode is either `analysis` (resizable, decorated, interactive — matches,
+  builds, analysis, settings) or `overlay` (borderless, transparent, click-through, pinned over
+  the game). They are separate windows because WebKitGTK fixes a web view's transparency at its
+  **first paint** and ignores every later change (ADR 0028): the analysis window's view is
+  declared `"transparent": false` and the overlay's `"transparent": true` in
+  `src-tauri/tauri.conf.json`. **Never** try to give one window both, and never call
+  `set_background_color` to switch between them — it appears to work and silently breaks
+  repainting. Only one window may be visible at a time, and `apply_window_mode` in
+  `src-tauri/src/lib.rs` is the **only** thing that may decide which: it hides the other window
+  first, then applies this mode's flags. Labels are `MAIN_WINDOW_LABEL = "main"` and
+  `OVERLAY_WINDOW_LABEL = "overlay"`; `window_label_for(mode)` is the mapping. Which view a
+  window renders comes from its own Tauri label (`viewForLabel` in `src/lib/window-view.ts`),
+  never from the `windowMode` store — that store says which window is on screen, and deriving the
+  view from it would swap the analysis window into the guide, which is what two windows prevent.
+  Only the analysis window runs the client-API poll and decides the mode; a second poller asks
+  the shell to switch modes too and the two undid each other's hides (measured: both windows
+  mapped at once). `src-tauri/capabilities/default.json` must list **both** window labels, or the
+  overlay gets no HTTP access and its guide shows "fetch not allowed by ACL".
 - **A transparent window paints nothing from `html`/`body`; only real elements reach the
-  screen.** `tauri.conf.json` declares the window `"transparent": true` so the overlay can sit
-  over the game, and under a transparent webview WebKitGTK does not paint a `background-color`
-  set on the document roots — a page that is text on transparent roots paints *nothing* (0 of
-  14,362 expected text pixels). Each mode therefore gets a full-viewport block element, both
+  screen.** The overlay window is declared `"transparent": true` so it can sit over the game,
+  and under a transparent webview WebKitGTK does not paint a `background-color` set on the
+  document roots — a page that is text on transparent roots paints *nothing* (0 of 14,362
+  expected text pixels). Each mode therefore gets a full-viewport block element, both
   `position: fixed; inset: 0` because a flow-layout `height: 100%` div also measured 98.4%
   alpha-0: `.app-surface` for analysis (`src/routes/+layout.svelte`) and `.guide-panel` for
   overlay. Verify with `XGetImage` on the window's own buffer, **not** a screenshot — the page
@@ -345,25 +354,36 @@ and there is no extra multiplier to apply.
   cannot out-rank an *active* fullscreen client (ADR 0015).
 - **`WebviewWindow::set_background_color(None)` is opaque white, not transparent.**
   tauri-runtime-wry 2.12.1 maps `None` to `(255,255,255,255)`
-  (`tauri-runtime-wry-2.12.1/src/lib.rs:3789`), which paints the guide onto a solid white panel
-  over the game. The transparent value is `Some(Color(0,0,0,0))` — the constant
-  `TRANSPARENT_BACKGROUND`. Set the background on the **webview** (`window.as_ref() as
-  &Webview<Wry>`), never on the `WebviewWindow`: the window-level setter also writes the toplevel
-  colour as a GTK CSS rule that paints **in front of** the page (measured: `(10,13,18)` gave a
-  98.4% white window, `(0,8,255)` gave `(0,255,255)`). Set it on both mode branches, since the
-  startup path applies a stored mode without the other having been left. See ADR 0018.
+  (`tauri-runtime-wry-2.12.1/src/lib.rs:3789`), and the transparent value is
+  `Some(Color(0,0,0,0))`. **Neither is used any more** — transparency is now the creation-time
+  `"transparent"` flag on each window (ADR 0028), because a colour set after the first paint does
+  not take effect. The trap is still worth knowing if a background ever has to be set: use the
+  **webview** setter (`window.as_ref() as &Webview<Wry>`), never the `WebviewWindow` one, which
+  writes the toplevel colour as a GTK CSS rule that paints **in front of** the page (measured:
+  `(10,13,18)` gave a 98.4% white window, `(0,8,255)` gave `(0,255,255)`). See ADR 0018.
+- **A web view's transparency is fixed at its first paint and cannot be changed.** This is the
+  root cause of the hover/click/dropdown blanking the user reported, and the reason the app has
+  two windows (ADR 0028). `wry` 0.57.0 `src/webkitgtk/mod.rs:293-295` reads `attributes.transparent`
+  only when it **creates** the view. Measured in a harness by toggling one button's background colour
+  — the exact damage a `:hover` causes — and counting distinct colours: an opaque colour applied
+  *after* the page loaded collapses the window from 431 colours to **1** and stays blank;
+  applied *before* the first load it is fine (min 420 colours); a view created opaque is fine
+  (min 328). Every repair fails: another `set_background_color`, a full-surface resize, and a
+  `reload()` all left it blanked; the root-opacity nudge blanks first and recovers *later*, which
+  is why it was mistaken for a fix. A view that has been given an opaque colour can also **never**
+  be made see-through again (alpha-0 stayed `0.0%` through a flip and a reload, against `95.2%`
+  for a control view created transparent). Hence: opaque view for analysis, transparent view for
+  the overlay, two windows, and no runtime background switching.
 - **A transparent web view loses its buffer on every incremental repaint.** Under the software
   renderer this app is forced onto (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, ADR 0005), a view that was
-  transparent **from creation** — which `"transparent": true` in `src-tauri/tauri.conf.json` makes
-  it, via wry 0.57.0 `src/webkitgtk/mod.rs:293-295` — discards its backing store whenever anything
-  repaints and redraws only the damaged rectangle. Measured in a harness with the real guide page:
-  12.6% of the window painted after six one-line text updates under a transparent view, against
-  100% under an opaque one. **This is not overlay-specific** — it was originally written up that way
-  and that was wrong. The analysis view loses its buffer identically: resizing the real window to
-  1100x780 dropped it to 1.3% painted, and 10.3% on resizing back. It is also intermittent at
-  startup (measured: one launch in five, later two in six, came up at ~99.6% alpha-0 and stayed
-  blank because nothing repainted before the player touched it). Outside a match nothing repaints,
-  so the fault is invisible there and looks "fixed" every time it is checked outside a game.
+  transparent **from creation** discards its backing store whenever anything repaints and redraws
+  only the damaged rectangle. Measured in a harness with the real guide page: 12.6% of the window
+  painted after six one-line text updates under a transparent view, against 100% under an opaque
+  one. **This now applies only to the overlay window**, whose view is the transparent one; the
+  analysis window's view is opaque from creation, so it neither loses its buffer nor needs
+  repairing (measured after the split: 24 samples oscillating between 534 and 1903 distinct
+  colours, never collapsing). Before the split it applied to the analysis view too: resizing the
+  real window to 1100x780 dropped it to 1.3% painted.
   The remedy is `nudgeRepaint()` in `src/lib/repaint.ts`: alternate the root element's opacity
   between `1` and `0.999` to force a full-layer composite. **Repair is not enough — it has to
   happen in the same frame as the damage, or the window is visibly blank in between.** A hover or
@@ -589,10 +609,14 @@ and there is no extra multiplier to apply.
   indexing (such as `/analyze/[id]`) must **not** be prerendered — `adapter-static` treats
   a declared-but-unseen prerenderable route as a build error, so leaving the root rule
   alone is enough; do not add per-route opt-ins.
-- The app is a single window whose *view* is swapped in `src/routes/+layout.svelte`: the
-  build-order guide replaces the route children while the window is in overlay mode. A page
-  must therefore never assume it is always mounted — anything that must survive the swap
-  belongs above the layout, and the guide holds no state that the analysis pages need.
+- The app has two windows, and `src/routes/+layout.svelte` renders the build-order guide or the
+  route children depending on **which window it is running in**, read from that window's own
+  Tauri label via `viewForLabel` in `src/lib/window-view.ts` (ADR 0028). Both windows load the
+  same page, so a page must never assume it is the analysis one: anything that must be
+  analysis-only (such as the client-API poll that decides the mode) has to check the view. The
+  label starts as `view = $state<WindowView>('analysis')` and is corrected in `onMount`, which
+  is safe because both windows are declared `visible: false` and revealed only after the
+  frontend reports painted.
 - When adding a Tauri plugin, add it in **three** places or it fails at runtime rather
   than build time: `src-tauri/Cargo.toml`, the `.plugin(...)` chain in
   `src-tauri/src/lib.rs`, and its permission in `src-tauri/capabilities/default.json`. A
@@ -710,13 +734,19 @@ and there is no extra multiplier to apply.
   rectangle, which no containment test can tell apart from a player filling the screen. A saved
   rectangle restores only if `WindowGeometry::is_restorable` finds >64 px of overlap on BOTH
   axes with an attached monitor; otherwise fall back to 1280x820 centred. See ADR 0025.
-- **Any new code path that shows the analysis window must apply the saved rectangle.** There are
-  two reveal paths and they are easy to bring out of step: `apply_window_mode(_, Visibility::Shown)`
-  (hotkey, watcher) restores, but `warm_or_reveal_main_window` shows the window directly and had
-  to be given its own `window_geometry::restore` call. A new path that only calls `show()` will
-  silently ignore a rectangle the player chose, and the failure looks like "the save is broken"
-  rather than "this one path forgot". Restore AFTER `show()` in every case: a geometry request
-  against an unrealised `GdkWindow` is lost.
+- **Any new code path that shows the analysis window must apply the saved rectangle.** Two reveal
+  paths exist and they are easy to bring out of step: `apply_window_mode(_, Visibility::Shown)`
+  (hotkey, watcher, and the visible-start path, which now routes through it) restores, so a new
+  path should go through `apply_window_mode` rather than calling `show()` directly. A path that
+  only calls `show()` will silently ignore a rectangle the player chose, and the failure looks
+  like "the save is broken" rather than "this one path forgot". Restore AFTER `show()` in every
+  case: a geometry request against an unrealised `GdkWindow` is lost.
+- **`show_main_window` and the visible-start path must respect the mode.** With two windows,
+  showing "the app" means showing the window the current mode belongs to — `show_main_window`
+  returns early unless the mode is Analysis, and the visible start goes through
+  `apply_window_mode(app, window_mode(), Visibility::Shown)`. Showing the analysis window
+  unconditionally left BOTH windows mapped at once at startup (measured), because a start that
+  had already switched to overlay mode was then revealed a second time underneath the guide.
 
 ## Packaging and platform support
 

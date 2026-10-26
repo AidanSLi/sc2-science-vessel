@@ -63,6 +63,36 @@ pub use settings::Settings;
 /// frontend being involved.
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
+/// Label of the second window, which carries the build-order guide over the game.
+///
+/// The two modes live in **two windows**, not one, because WebKitGTK decides a web view's
+/// transparency at its first paint and never revisits that decision (ADR 0028). A view created
+/// transparent — which `"transparent": true` does, at `wry` 0.57.0 `src/webkitgtk/mod.rs:293-295`
+/// — discards its backing store on every incremental repaint, so a hover, a click or a dropdown
+/// restyle left only the changed element drawn and blanked the rest of the window. Measured: ten
+/// hover-like restyles collapsed the window from 431 distinct colours to 1. An analysis window
+/// must therefore never be a transparent view, and an overlay must, so they cannot be the same
+/// window.
+///
+/// Only one of the two is ever visible. `apply_window_mode` owns which, and hides the other — a
+/// hidden window still consumes nothing but memory, and its view keeps the transparency it was
+/// created with, which is the whole point.
+pub const OVERLAY_WINDOW_LABEL: &str = "overlay";
+
+/// The window label that renders a given mode.
+///
+/// A mode and its window are the same fact, so the mapping lives in one function rather than
+/// being spelled out at each of the call sites that need to reach the right window.
+///
+/// @param mode The mode whose window is wanted.
+/// @returns The label of the window that renders that mode.
+pub fn window_label_for(mode: WindowMode) -> &'static str {
+    match mode {
+        WindowMode::Analysis => MAIN_WINDOW_LABEL,
+        WindowMode::Overlay => OVERLAY_WINDOW_LABEL,
+    }
+}
+
 /// Which of its two roles the single window is playing.
 ///
 /// Serialised to the frontend as the lowercase tag (`"analysis"` / `"overlay"`), which is the
@@ -75,6 +105,21 @@ pub enum WindowMode {
     Analysis,
     /// Borderless, transparent, click-through build-order guide pinned over the game.
     Overlay,
+}
+
+impl WindowMode {
+    /// The mode this one is not.
+    ///
+    /// Used to find the window that has to be taken off screen when this mode takes over, so a
+    /// mode change never leaves two windows visible at once.
+    ///
+    /// @returns The other mode.
+    pub fn other(self) -> Self {
+        match self {
+            Self::Analysis => Self::Overlay,
+            Self::Overlay => Self::Analysis,
+        }
+    }
 }
 
 /// The window's current mode.
@@ -290,7 +335,11 @@ fn hotkey_should_hide(mode: WindowMode, mapped: bool, active: bool) -> bool {
 /// @returns `true` if the window is now visible.
 #[tauri::command]
 fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    // The window the hotkey acts on is the one that renders the current mode: with two windows
+    // (ADR 0028) the stored mode is what says which is on screen, so asking the *wrong* one
+    // whether it is visible would answer "no" and make every press a reveal.
+    let mode = window_mode();
+    let Some(window) = app.get_webview_window(window_label_for(mode)) else {
         return Ok(false);
     };
 
@@ -303,11 +352,10 @@ fn toggle_window(app: tauri::AppHandle) -> tauri::Result<bool> {
     } else {
         false
     };
-    let visible = hotkey_should_hide(window_mode(), mapped, active);
+    let visible = hotkey_should_hide(mode, mapped, active);
     if std::env::var_os("SC2SV_DEBUG_TOGGLE").is_some() {
         eprintln!(
-            "toggle: is_visible={mapped} is_active={active} hiding={visible} mode={:?}",
-            window_mode()
+            "toggle: is_visible={mapped} is_active={active} hiding={visible} mode={mode:?}"
         );
     }
     if visible {
@@ -382,7 +430,9 @@ fn reveal_for_hotkey(app: &tauri::AppHandle) -> tauri::Result<()> {
     // client the user has not just clicked.
     let handle = app.clone();
     let raised = app.run_on_main_thread(move || {
-        if let Some(window) = handle.get_webview_window(MAIN_WINDOW_LABEL) {
+        // The window that was just revealed, not the analysis one: after a mode change the mode
+        // is the only thing that says which window is on screen.
+        if let Some(window) = handle.get_webview_window(window_label_for(mode)) {
             platform::raise_and_activate(&window);
         }
     });
@@ -428,20 +478,34 @@ fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 fn warm_or_reveal_main_window(app: tauri::AppHandle) {
     let start_hidden = start_hidden_for_this_launch(&app);
     std::thread::spawn(move || {
+        // Both windows are warmed, not just the analysis one. The overlay view has to reach its
+        // first paint too, and it is the one that must do so *while transparent* — that state is
+        // fixed at first paint and is what makes the game show through (ADR 0028). A view that
+        // was never shown would otherwise complete that first paint at some unpredictable later
+        // moment, mid-match, which is the one moment it must not be blank.
+        for label in [MAIN_WINDOW_LABEL, OVERLAY_WINDOW_LABEL] {
+            if let Some(window) = app.get_webview_window(label) {
+                let _ = window.show();
+                let _ = window.hide();
+            }
+        }
+
         let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
             return;
         };
-        // Map it once so the webview is painted and its event delivery is known to work.
-        let _ = window.show();
-        let _ = window.hide();
 
+        // A visible start reveals the window the current mode belongs to, not always the analysis
+        // one. Reading the mode here rather than assuming analysis is what stops a start that
+        // begins in overlay mode (the pinned dev affordance, or a game already running) from
+        // putting the analysis window up as well — measured: both windows mapped at once.
         if !start_hidden {
-            let _ = window.show();
-            // This path reveals the window WITHOUT going through `apply_window_mode` (the mode
-            // is already whatever `tauri.conf.json` declared, which is analysis), so the saved
-            // rectangle has to be applied here too or a visible start would ignore it. Placed
-            // after the `show` for the same reason as everywhere else: a geometry request
-            // against an unrealised `GdkWindow` is lost.
+            if let Err(err) = apply_window_mode(&app, window_mode(), Visibility::Shown) {
+                eprintln!("could not reveal the window on a visible start ({err})");
+            }
+            // A visible start shows the window WITHOUT waiting for the frontend to report painted,
+            // so the saved rectangle has to be applied here too or it would be ignored. Placed
+            // after the reveal for the same reason as everywhere else: a geometry request against
+            // an unrealised `GdkWindow` is lost.
             //
             // Measured before this call existed: a window saved at 1100x700+300+150 came back at
             // 1280x820 centred on every launch, while a hide-then-reveal (which does go through
@@ -449,24 +513,6 @@ fn warm_or_reveal_main_window(app: tauri::AppHandle) {
             // paths was the bug.
             if window_mode() == WindowMode::Analysis {
                 window_geometry::restore(&app, &window);
-            }
-            // A view that was transparent from creation can finish its first composite with an
-            // empty backing store, leaving the window fully see-through until something later
-            // forces a repaint. Measured on the analysis view: one launch in five started at
-            // 99.7% alpha-0 and stayed that way, because nothing repainted until the player
-            // moved or resized the window. The frontend nudges a repaint on resize and on the
-            // clock, but neither happens before the window is on screen.
-            //
-            // Re-asserting the webview's own background once it is mapped is the cheap fix: the
-            // setter asks WebKit to clear the surface to an opaque colour, which is the paint
-            // the empty state was missing. It is the same call and the same colour as
-            // `apply_window_mode`, so it cannot disagree with it, and it is harmless when the
-            // first composite already succeeded.
-            if window_mode() == WindowMode::Analysis {
-                let webview: &tauri::Webview<tauri::Wry> = window.as_ref();
-                if let Err(err) = webview.set_background_color(Some(ANALYSIS_BACKGROUND)) {
-                    eprintln!("could not repaint the starting window ({err})");
-                }
             }
             // The rectangle is now settled, so this is the best moment to persist it: it makes
             // the first launch write a geometry at all (there is nothing to capture until the
@@ -563,13 +609,29 @@ fn apply_window_mode(
     mode: WindowMode,
     visibility: Visibility,
 ) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    // One window per mode (ADR 0028), so the label follows the mode. The other window is hidden
+    // below: only one may ever be on screen, and which one that is *is* the mode.
+    let Some(window) = app.get_webview_window(window_label_for(mode)) else {
         return Ok(());
     };
+    let other = app.get_webview_window(window_label_for(mode.other()));
 
     // Read once, at the top, before any branch touches the window. Every branch below needs to
     // know whether to reveal it, and re-reading after a `hide` would answer the wrong question.
     let should_show = should_reveal(visibility, window.is_visible().unwrap_or(false));
+
+    // Take the window this mode does not use off screen before anything else. Ordering matters:
+    // hiding the other window *after* showing this one would leave both on screen for the frame
+    // in between, and during a match that reads as the analysis window flashing over the game.
+    //
+    // It is unconditional — not `if other.is_visible()` — because the release of the overlay's
+    // unmanaged state below has to happen even for a window that was already hidden, or a window
+    // left override-redirect stays unmanaged and comes back with no decorations and no input.
+    if let Some(other) = other.as_ref() {
+        if other.is_visible().unwrap_or(false) {
+            let _ = other.hide();
+        }
+    }
 
     match mode {
         WindowMode::Overlay => {
@@ -594,21 +656,19 @@ fn apply_window_mode(
             // `show()` the overlay became `_NET_ACTIVE_WINDOW` and the fullscreen game was
             // demoted, which the stacking watcher then read as "the game is not active".
             platform::refuse_focus(&window);
-            // Back to a fully transparent web view, so the guide shows the game through its own
-            // text and nothing else. Set on every overlay entry rather than only when leaving
-            // analysis: a mode can be entered without the other having been left (the startup
-            // path applies the stored mode directly), and a guide that came up with an opaque
-            // black backdrop would hide the game it is supposed to float over.
-            // Note the argument: `Some(Color(0, 0, 0, 0))`, not `None`. `None` does *not* mean
-            // "transparent" — tauri-runtime-wry 2.12.1 maps it to opaque white at
-            // `src/lib.rs:3789` (`color.map(Into::into).unwrap_or((255, 255, 255, 255))`), and
-            // measured on this build that painted the guide onto a 94.3 % `rgba(254,254,254,255)`
-            // panel that hid the game completely. A zero-alpha colour is the value that actually
-            // clears the surface.
-            let webview: &tauri::Webview<tauri::Wry> = window.as_ref();
-            if let Err(err) = webview.set_background_color(Some(TRANSPARENT_BACKGROUND)) {
-                eprintln!("could not make the overlay's background transparent ({err})");
-            }
+            // Deliberately NO `set_background_color` call here either.
+            //
+            // The overlay's transparency is not something this function can grant: WebKitGTK
+            // fixes a web view's transparency at its first paint and ignores every later
+            // request (ADR 0028), so a view that started opaque can never be made see-through.
+            // The overlay window's view is created transparent by `"transparent": true` in
+            // `tauri.conf.json`, and this window is the only one whose view is.
+            //
+            // This replaces a call that passed `Some(Color(0, 0, 0, 0))` — written that way
+            // because `None` does *not* mean transparent in this stack (tauri-runtime-wry
+            // 2.12.1 `src/lib.rs:3789` maps it to opaque white, measured as a 94.3 % white panel
+            // that hid the game). That reasoning still holds; it just stopped mattering once the
+            // view is born transparent, which is the only way to get the state at all.
             if should_show {
                 window.show()?;
             }
@@ -695,29 +755,21 @@ fn apply_window_mode(
             window.set_shadow(true)?;
             window.set_resizable(true)?;
             window.set_skip_taskbar(false)?;
-            // Give the web view an opaque background. The page's own `.app-surface` already
-            // paints the same colour (ADR 0017), so this is the second of two defences, and it
-            // is deliberately the *same* colour: the two agree, so there is no seam while the
-            // page is still laying out.
+            // Deliberately NO `set_background_color` call here.
             //
-            // Both are wanted because the two fail in different circumstances. `.app-surface`
-            // needs the page to have been mounted; a view created transparent and shown before
-            // its first composite has nothing underneath it until then. Measured without this
-            // call, three launches in a row painted 100% — so the CSS alone is sufficient in
-            // practice — but this costs one call and removes the window in which the desktop can
-            // show through.
+            // It used to be here, and it was the bug: an opaque colour set *after* the page's
+            // first paint does not make the view opaque, because WebKitGTK fixes a view's
+            // transparency at that first paint (ADR 0028). The call made the window *look*
+            // opaque — which is why this was missed for so long — while leaving the view unable
+            // to repaint itself, so every hover, click and dropdown restyle blanked everything
+            // except the element being interacted with. Measured: 431 distinct colours collapsed
+            // to 1 over ten hover-like restyles, and no later call, resize, reload or repaint
+            // nudge recovered it.
             //
-            // This is `Webview::set_background_color`, deliberately not
-            // `WebviewWindow::set_background_color`: the latter also sets it on the *window*,
-            // which goes through GTK CSS and paints over the page instead of behind it. Measured
-            // there: asking for `(10,13,18)` produced a 98.4 % white window, and `(0,8,255)`
-            // produced `(0,255,255)`. The web-view-only setter round-trips exactly.
-            let webview: &tauri::Webview<tauri::Wry> = window.as_ref();
-            if let Err(err) = webview.set_background_color(Some(ANALYSIS_BACKGROUND)) {
-                // Not fatal: the page's own surface still paints. Worth a line, not a failed mode
-                // change.
-                eprintln!("could not set the analysis background colour ({err})");
-            }
+            // The analysis window's view is now created opaque by `"transparent": false` in
+            // `tauri.conf.json`, so its first paint is opaque and the fault cannot arise. The
+            // page's own `.app-surface` still paints the same colour underneath (ADR 0017), so
+            // there is no seam while the page is still laying out.
             if should_show {
                 window.show()?;
             }
@@ -987,6 +1039,16 @@ const MAIN_WINDOW_WATCHDOG: std::time::Duration = std::time::Duration::from_secs
 ///
 /// @param app The running app handle.
 fn show_main_window(app: &tauri::AppHandle) {
+    // Only ever the analysis window, and only when the app is *in* analysis mode. With two windows
+    // (ADR 0028) this path used to show the analysis window regardless, so a start that had
+    // already switched to overlay mode left both windows on screen: the guide was up and the
+    // analysis window then appeared underneath it one second later.
+    //
+    // The mode is the only thing that decides which window may be visible, so a request to show
+    // the app that arrives while it is in overlay mode is already satisfied by the guide.
+    if window_mode() != WindowMode::Analysis {
+        return;
+    }
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         // `is_visible` can error transiently on a window being torn down; showing it again
         // is harmless, so a failure here is not worth propagating.
@@ -1056,8 +1118,19 @@ fn arm_main_window_watchdog(app: tauri::AppHandle) {
 /// **A resident start makes this a no-op.** The whole point of `start_hidden` is that the app
 /// sits invisibly until the player asks for it, so a frontend that has painted must not reveal
 /// the window on its own. The player's hotkey is the only thing that may bring it up.
+///
+/// **The overlay window is ignored.** Both windows load the same page, so both report ready, and
+/// the overlay's report must not put the *analysis* window on screen — that would be a 1280-wide
+/// opaque window appearing over the game at exactly the moment the guide was warming up. The
+/// overlay is only ever shown by a mode change, never by this signal.
+///
+/// @param app The running app handle.
+/// @param window The window whose frontend is reporting, injected by Tauri.
 #[tauri::command]
-fn frontend_ready(app: tauri::AppHandle) {
+fn frontend_ready(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return;
+    }
     if start_hidden_for_this_launch(&app) {
         return;
     }
@@ -1243,6 +1316,9 @@ fn set_start_hidden(app: tauri::AppHandle, enabled: bool) -> Result<bool, String
     current.start_hidden = enabled;
     current.save(&app)?;
     if enabled {
+        // Both windows, because "never show it unasked" is a statement about the app, not about
+        // one of its two windows: leaving the guide on screen over the game after this is set
+        // would be the exact thing the setting exists to prevent.
         if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
             let _ = window.hide();
             OVERLAY_WATCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1250,6 +1326,10 @@ fn set_start_hidden(app: tauri::AppHandle, enabled: bool) -> Result<bool, String
             // back, and this setting is exactly "never show it unasked". Restoring management
             // here means the next reveal behaves like an ordinary window.
             release_unmanaged(&window);
+        }
+        if let Some(overlay) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
+            let _ = overlay.hide();
+            release_unmanaged(&overlay);
         }
     }
     Ok(enabled)
@@ -1465,12 +1545,13 @@ pub fn run() {
             arm_main_window_watchdog(app.handle().clone());
             Ok(())
         })
-        // Window events are how the analysis rectangle is observed. A builder-level handler
-        // rather than a per-window one because the window is the only one the app has, and
-        // `window_geometry::on_window_event` is what filters for `Moved`/`Resized`, ignores
-        // overlay mode and swallows the events of a restore.
+        // Window events are how the analysis rectangle is observed. A builder-level handler so
+        // it sees both windows' events, with `window_geometry::on_window_event` filtering to the
+        // analysis one by label, for `Moved`/`Resized`, off overlay mode, and swallowing the
+        // events of a restore. The reporting window is passed through: the event describes only
+        // that window, and the app now has two.
         .on_window_event(|window, event| {
-            window_geometry::on_window_event(&window.app_handle().clone(), event);
+            window_geometry::on_window_event(&window.app_handle().clone(), window.label(), event);
         })
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -1847,22 +1928,6 @@ fn claim_unmanaged(window: &WebviewWindow) -> bool {
         false
     }
 }
-
-/// The colour the analysis view's web view is given, so it never composites onto nothing.
-///
-/// Must stay equal to the frontend's `--color-surface-950` (`oklch(0.16 0.012 258)`, which is
-/// `#0a0d12`). The page paints the same colour on its own surface, so the two agree and the
-/// window has no visible seam while the page is still loading. That agreement is not what makes
-/// the window opaque — the web view's own background is — but a mismatch would show as a flash of
-/// the wrong shade on every reveal.
-const ANALYSIS_BACKGROUND: tauri::webview::Color =
-    tauri::webview::Color(0x0a, 0x0d, 0x12, 0xff);
-
-/// The zero-alpha colour that makes the overlay's web view see-through.
-///
-/// A named constant rather than `None` at the call site, because `None` means *opaque white* in
-/// this stack (see the comment where it is used) — the opposite of what the overlay needs.
-const TRANSPARENT_BACKGROUND: tauri::webview::Color = tauri::webview::Color(0, 0, 0, 0);
 
 /// Window size in analysis mode, in logical pixels.
 ///

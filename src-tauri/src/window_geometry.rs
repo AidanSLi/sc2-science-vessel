@@ -217,14 +217,26 @@ pub fn start_debounce(app: AppHandle) {
 	});
 }
 
-/// Handles a window event for the main window.
+/// Handles a window event, capturing the analysis window's rectangle.
 ///
 /// Kept out of the `run()` closure so that the event selection is readable in one place rather
 /// than buried in the builder chain.
 ///
+/// The reporting window is passed in rather than looked up, because the app now has two of them
+/// and the event only describes one: looking the analysis window up here meant the *overlay's*
+/// move and resize events were attributed to the analysis window, so dragging the guide over the
+/// game would overwrite the rectangle the player had chosen for the real window.
+///
 /// @param app The running app handle.
+/// @param label The label of the window the event came from.
 /// @param event The event Tauri reported.
-pub fn on_window_event(app: &AppHandle, event: &tauri::WindowEvent) {
+pub fn on_window_event(app: &AppHandle, label: &str, event: &tauri::WindowEvent) {
+	// Only the analysis window has a rectangle the player chose; the overlay's is placed by the
+	// stacking watcher and is not a preference. Filtering on the label is what keeps the two
+	// apart even when the mode is momentarily stale during a switch.
+	if label != crate::MAIN_WINDOW_LABEL {
+		return;
+	}
 	// Only the two events that describe a rectangle. `ScaleFactorChanged` in particular arrives
 	// alongside a resize on some platforms, where it is the resize that carries the geometry.
 	if !matches!(

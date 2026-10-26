@@ -24,7 +24,20 @@
         "center": true,
         "decorations": false,
         "theme": "Dark",
+        "transparent": false,
+        "visible": false
+      },
+      {
+        "label": "overlay",
+        "title": "SC2 Science Vessel overlay",
+        "width": 380,
+        "height": 600,
+        "resizable": true,
+        "decorations": false,
+        "theme": "Dark",
         "transparent": true,
+        "skipTaskbar": true,
+        "focus": false,
         "visible": false
       }
     ],

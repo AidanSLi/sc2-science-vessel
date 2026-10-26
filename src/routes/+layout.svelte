@@ -24,6 +24,7 @@
 	import { decideMode } from '#lib/game-mode';
 	import type { WindowMode } from '#lib/window-mode';
 	import { initWindowMode, revealWindowMode, setWindowMode, windowMode } from '#lib/window-mode';
+	import { viewForLabel, type WindowView } from '#lib/window-view';
 	import { observeRepaints } from '#lib/repaint';
 	import { initTheme, onThemeChange, themeHasSky, type ThemeId } from '#lib/theme';
 	import BuildOrderGuide from '#lib/components/BuildOrderGuide.svelte';
@@ -32,6 +33,24 @@
 	import '../app.css';
 
 	let { children } = $props();
+
+	/**
+	 * Which view THIS window renders, fixed for its lifetime.
+	 *
+	 * The app has two windows, one per mode (ADR 0028), and both load this same page, so the view
+	 * comes from the window's own Tauri **label** — the same identifier the shell uses to find it,
+	 * so the two cannot disagree.
+	 *
+	 * Deliberately NOT derived from `$windowMode`: that store mirrors which window is *on screen*,
+	 * and swapping this component's markup with it would turn the analysis window into the guide
+	 * and back, which is exactly what two windows exist to stop.
+	 *
+	 * Starts as `'analysis'` and is corrected once the label has been read. The analysis view is the
+	 * right first guess because both windows are declared `visible: false` and revealed after the
+	 * frontend reports painted, so the wrong guess is never on screen; and a wrong first frame in
+	 * the analysis window is a brief empty surface rather than a text-only panel.
+	 */
+	let view = $state<WindowView>('analysis');
 
 	/**
 	 * The active theme, for deciding whether to render the ambient background layers.
@@ -69,6 +88,17 @@
 	 */
 	async function poll() {
 		live = await pollClientApi();
+
+		// Only the analysis window decides the mode.
+		//
+		// Both windows load this page and both poll, but there is one mode for the app, and two
+		// pollers asking the shell to switch it is two sources of truth for the same fact — which
+		// is exactly what left both windows on screen: each window's first poll applied its own
+		// view's mode, and the second window's request undid the first's hide. The analysis window
+		// owns the decision because it is the one that is on screen when nothing is happening, and
+		// the guide has nothing to decide: it is shown and hidden by the shell.
+		if (view !== 'analysis') return;
+
 		const mode = decideMode(live);
 
 		// `null` means "cannot tell what is happening, leave the view alone" — see `decideMode`.
@@ -111,6 +141,35 @@
 	}
 
 	onMount(() => {
+		let stopRepainting: (() => void) | undefined;
+
+		// Read this window's own label and render the matching view. Before the theme and the mode,
+		// because it decides which subtree exists at all — rendering the guide first and replacing it
+		// with the analysis page would be a visible flash in a window that appears over a live game.
+		void (async () => {
+			if (isTauri()) {
+				try {
+					const { getCurrentWindow } = await import('@tauri-apps/api/window');
+					view = viewForLabel(getCurrentWindow().label);
+				} catch {
+					// Without a label the analysis view stays, which is the usable fallback.
+				}
+			}
+
+			// Keep the transparent view's backing store alive across repaints.
+			//
+			// Only the overlay window needs this. The analysis window's view is opaque from creation
+			// (ADR 0028), and an opaque view never loses its backing store — measured after the
+			// split: 24 samples oscillating between 534 and 1903 distinct colours, never
+			// collapsing. The nudge is not free: it sets `opacity: 0.999` on the root element, which
+			// forces the whole document onto its own composited layer, so running it in a window
+			// that does not need it is a standing cost for no benefit.
+			//
+			// Started AFTER the label is read, because until then `view` is the analysis default and
+			// the overlay would have been left without the nudge it depends on.
+			if (view === 'overlay') stopRepainting = observeRepaints();
+		})();
+
 		// Apply the stored theme before anything else on this mount. `app.html` already carries the
 		// default so the first frame is never unthemed; this replaces it with the user's choice.
 		void initTheme().then((chosen) => {
@@ -132,11 +191,6 @@
 			stopListening = unlisten;
 		});
 
-		// Keep the transparent view's backing store alive across repaints. This lives here, above
-		// both modes, because the fault is not mode-specific: the guide collapsed to its status
-		// line while the clock ticked, and the analysis view went blank outside the repainted
-		// rectangle when it was interacted with. See `#lib/repaint` and ADR 0019.
-		const stopRepainting = observeRepaints();
 
 		// Poll immediately, then once a second. The first read must not wait a second: a player
 		// opening the app during a game should see the build guide straight away.
@@ -162,20 +216,23 @@
 			clearInterval(timer);
 			stopListening?.();
 			stopTheme();
-			stopRepainting();
+			stopRepainting?.();
 		};
 	});
 </script>
 
-{#if $windowMode === 'overlay'}
+{#if view === 'overlay'}
 	<BuildOrderGuide />
 {:else}
 	<!--
-		The analysis view sits on `.app-surface` and not on the page's own background. The window
-		is declared `transparent: true` for the overlay's sake, and in that state WebKitGTK does
-		not paint a `background-color` set on `html`/`body`; a full-size element's background *is*
-		painted. Without this wrapper the analysis view is a see-through pane over the desktop.
+		The analysis view sits on `.app-surface` and not on the page's own background. A window
+		with a transparent web view — which the overlay window is — does not paint a
+		`background-color` set on `html`/`body`; a full-size element's background *is* painted.
 		See the `.app-surface` comment in app.css for the measurements.
+
+		This window's own view is declared `"transparent": false` (ADR 0028), so it is opaque
+		whatever this wrapper does; the wrapper is kept because it is what paints the themed
+		surface colour, and it is what the analysis view's layout is built around.
 	-->
 	<div class="app-surface h-full w-full">
 		<!--

@@ -1,9 +1,10 @@
 {
 	"$schema": "../gen/schemas/desktop-schema.json",
 	"identifier": "default",
-	"description": "Permissions for the app's single window, which changes shape between its analysis and build-guide modes.",
+	"description": "Permissions for both of the app's windows: the analysis window and the build-guide overlay, which are separate windows so each can have the transparency its role needs (ADR 0028).",
 	"windows": [
-		"main"
+		"main",
+		"overlay"
 	],
 	"permissions": [
 		"core:default",
